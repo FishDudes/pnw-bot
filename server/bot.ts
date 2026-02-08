@@ -12,7 +12,7 @@ const NEW_NATIONS_QUERY = `
         id
         nation_name
         leader_name
-        founded
+        date
         alliance_id
       }
     }
@@ -59,7 +59,8 @@ export async function runBotCycle() {
 
     // 2. Process each nation
     for (const nation of nations) {
-      const foundedDate = new Date(nation.founded);
+      // The API returns 'date' for founding date
+      const foundedDate = new Date(nation.date);
       
       // Only process if founded in the last 30 minutes
       if (foundedDate < thirtyMinutesAgo) {
