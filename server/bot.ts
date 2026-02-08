@@ -4,10 +4,10 @@ import { storage } from "./storage";
 const API_ENDPOINT = "https://politicsandwar.com/api/send-message/";
 const GRAPHQL_ENDPOINT = "https://api.politicsandwar.com/graphql";
 
-// GraphQL query to get new nations
+// GraphQL query to get new nations with a filter for the last 30 minutes
 const NEW_NATIONS_QUERY = `
   query {
-    nations(first: 20, orderBy: {column: DATE, order: DESC}) {
+    nations(first: 50, orderBy: {column: DATE, order: DESC}) {
       data {
         id
         nation_name
@@ -43,8 +43,6 @@ export async function runBotCycle() {
 
     // 1. Fetch new nations
     console.log("Fetching new nations...");
-    // Note: If using an API Key for GraphQL, it might need to be passed in query params or headers.
-    // Based on docs, v3 usually requires api_key param.
     const graphqlResponse = await axios.post(`${GRAPHQL_ENDPOINT}?api_key=${config.apiKey}`, {
       query: NEW_NATIONS_QUERY
     });
@@ -56,10 +54,18 @@ export async function runBotCycle() {
       return;
     }
 
-    console.log(`Found ${nations.length} recent nations.`);
+    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+    console.log(`Found ${nations.length} recent nations. Filtering for those founded after ${thirtyMinutesAgo.toISOString()}`);
 
     // 2. Process each nation
     for (const nation of nations) {
+      const foundedDate = new Date(nation.founded);
+      
+      // Only process if founded in the last 30 minutes
+      if (foundedDate < thirtyMinutesAgo) {
+        continue;
+      }
+
       // Check if already messaged
       const alreadyMessaged = await storage.hasMessagedNation(parseInt(nation.id));
       if (alreadyMessaged) {
