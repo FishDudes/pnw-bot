@@ -1,38 +1,92 @@
-import { type User, type InsertUser } from "@shared/schema";
-import { randomUUID } from "crypto";
-
-// modify the interface with any CRUD methods
-// you might need
+import { db } from "./db";
+import { botConfig, messagedNations, type BotConfig, type InsertBotConfig, type UpdateConfigRequest, type MessagedNation, type InsertMessagedNation } from "@shared/schema";
+import { eq, desc } from "drizzle-orm";
 
 export interface IStorage {
-  getUser(id: string): Promise<User | undefined>;
-  getUserByUsername(username: string): Promise<User | undefined>;
-  createUser(user: InsertUser): Promise<User>;
+  getConfig(): Promise<BotConfig | undefined>;
+  updateConfig(config: UpdateConfigRequest): Promise<BotConfig>;
+  toggleBot(isActive: boolean): Promise<BotConfig>;
+  updateLastRun(): Promise<void>;
+  
+  getLogs(): Promise<MessagedNation[]>;
+  addLog(log: InsertMessagedNation): Promise<MessagedNation>;
+  hasMessagedNation(nationId: number): Promise<boolean>;
 }
 
-export class MemStorage implements IStorage {
-  private users: Map<string, User>;
-
-  constructor() {
-    this.users = new Map();
+export class DatabaseStorage implements IStorage {
+  async getConfig(): Promise<BotConfig | undefined> {
+    const configs = await db.select().from(botConfig).limit(1);
+    return configs[0];
   }
 
-  async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
+  async updateConfig(update: UpdateConfigRequest): Promise<BotConfig> {
+    const existing = await this.getConfig();
+    if (existing) {
+      const [updated] = await db.update(botConfig)
+        .set(update)
+        .where(eq(botConfig.id, existing.id))
+        .returning();
+      return updated;
+    } else {
+      const [created] = await db.insert(botConfig)
+        .values({ ...update, isActive: false }) // Default to inactive on creation if not specified
+        .returning();
+      return created;
+    }
   }
 
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
+  async toggleBot(isActive: boolean): Promise<BotConfig> {
+    const existing = await this.getConfig();
+    if (existing) {
+      const [updated] = await db.update(botConfig)
+        .set({ isActive })
+        .where(eq(botConfig.id, existing.id))
+        .returning();
+      return updated;
+    } else {
+      // Should create if not exists, though unlikely to toggle before creating
+      const [created] = await db.insert(botConfig)
+        .values({ 
+            apiKey: "", 
+            subject: "Welcome", 
+            messageTemplate: "Welcome!", 
+            isActive 
+        })
+        .returning();
+      return created;
+    }
   }
 
-  async createUser(insertUser: InsertUser): Promise<User> {
-    const id = randomUUID();
-    const user: User = { ...insertUser, id };
-    this.users.set(id, user);
-    return user;
+  async updateLastRun(): Promise<void> {
+    const existing = await this.getConfig();
+    if (existing) {
+      await db.update(botConfig)
+        .set({ lastRunAt: new Date() })
+        .where(eq(botConfig.id, existing.id));
+    }
+  }
+
+  async getLogs(): Promise<MessagedNation[]> {
+    return await db.select()
+      .from(messagedNations)
+      .orderBy(desc(messagedNations.messagedAt))
+      .limit(50);
+  }
+
+  async addLog(log: InsertMessagedNation): Promise<MessagedNation> {
+    const [entry] = await db.insert(messagedNations)
+      .values(log)
+      .returning();
+    return entry;
+  }
+
+  async hasMessagedNation(nationId: number): Promise<boolean> {
+    const existing = await db.select()
+      .from(messagedNations)
+      .where(eq(messagedNations.nationId, nationId))
+      .limit(1);
+    return existing.length > 0;
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();
