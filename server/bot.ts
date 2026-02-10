@@ -76,15 +76,11 @@ export async function runBotCycle() {
       // Send message
       console.log(`Sending message to nation ${nation.id} (${nation.nation_name})...`);
       
-      const discordLink = "https://discord.gg/BA3TY4AAPf";
-      const footer = `<br><br>Click <a href="${discordLink}">here</a> to join!`;
-      const fullMessage = config.messageTemplate + footer;
-      
       const params = new URLSearchParams();
       params.append('key', config.apiKey);
       params.append('to', nation.id);
       params.append('subject', config.subject);
-      params.append('message', fullMessage);
+      params.append('message', config.messageTemplate);
 
       try {
         const msgResponse = await axios.post(API_ENDPOINT, params);
