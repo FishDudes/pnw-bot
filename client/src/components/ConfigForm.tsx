@@ -89,14 +89,14 @@ export function ConfigForm() {
           </label>
           <textarea
             {...form.register("messageTemplate")}
-            placeholder="Enter your welcome message... HTML is supported."
+            placeholder="Enter your welcome message... HTML is supported (e.g., <b>bold text</b>)."
             className="input-field min-h-[150px] resize-none flex-1 font-mono text-sm leading-relaxed"
           />
           {form.formState.errors.messageTemplate && (
             <p className="text-xs text-red-400 mt-1">{form.formState.errors.messageTemplate.message}</p>
           )}
           <p className="text-xs text-muted-foreground">
-            Supports basic HTML tags.
+            Supports HTML formatting. Use <b>&lt;b&gt;bold text&lt;/b&gt;</b> for bolding.
           </p>
         </div>
 

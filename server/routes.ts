@@ -46,5 +46,10 @@ export async function registerRoutes(
   // Start the background service
   startBotService();
 
+  // UptimeRobot health check endpoint
+  app.get("/health", (req, res) => {
+    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
   return httpServer;
 }
