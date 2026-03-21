@@ -17,7 +17,7 @@ export const botConfig = pgTable("bot_config", {
 // Store history of messaged nations to avoid duplicates
 export const messagedNations = pgTable("messaged_nations", {
   id: serial("id").primaryKey(),
-  nationId: integer("nation_id").notNull().unique(),
+  nationId: integer("nation_id").notNull(),
   nationName: text("nation_name").notNull(),
   leaderName: text("leader_name"),
   messagedAt: timestamp("messaged_at").defaultNow().notNull(),

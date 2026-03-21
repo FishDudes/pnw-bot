@@ -76,16 +76,6 @@ export class DatabaseStorage implements IStorage {
   async addLog(log: InsertMessagedNation): Promise<MessagedNation> {
     const [entry] = await db.insert(messagedNations)
       .values(log)
-      .onConflictDoUpdate({
-        target: messagedNations.nationId,
-        set: {
-          nationName: log.nationName,
-          leaderName: log.leaderName,
-          messagedAt: new Date(),
-          status: log.status,
-          error: log.error ?? null,
-        }
-      })
       .returning();
     return entry;
   }
