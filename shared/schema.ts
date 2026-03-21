@@ -1,4 +1,4 @@
-import { pgTable, text, serial, boolean, timestamp, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, boolean, timestamp, integer, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -23,7 +23,9 @@ export const messagedNations = pgTable("messaged_nations", {
   messagedAt: timestamp("messaged_at").defaultNow().notNull(),
   status: text("status").notNull(), // 'success', 'failed'
   error: text("error"),
-});
+}, (table) => [
+  index("idx_messaged_nations_nation_status").on(table.nationId, table.status),
+]);
 
 // === SCHEMAS ===
 
