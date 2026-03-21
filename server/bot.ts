@@ -136,7 +136,7 @@ export function startBotService() {
   // Run immediately on start
   runBotCycle();
 
-  // Then every 2 minutes
-  intervalId = setInterval(runBotCycle, 2 * 60 * 1000); 
-  console.log("Bot service started (2 minute interval).");
+  // Then every 1 minute
+  intervalId = setInterval(runBotCycle, 1 * 60 * 1000); 
+  console.log("Bot service started (1 minute interval).");
 }

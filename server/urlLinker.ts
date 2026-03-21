@@ -1,11 +1,11 @@
 export function autoLinkUrls(text: string): string {
   return text.replace(
-    /(<a\s[^>]*href\s*=\s*["']https?:\/\/[^"']*["'][^>]*>[\s\S]*?<\/a>)|(https?:\/\/[^\s<>"']+)/gi,
-    (match, anchorTag) => {
-      if (anchorTag) {
-        return anchorTag;
+    /(\[url(?:=[^\]]*)\][\s\S]*?\[\/url\])|(https?:\/\/[^\s<>"'\[\]]+)/gi,
+    (match, bbcodeTag) => {
+      if (bbcodeTag) {
+        return bbcodeTag;
       }
-      return `<a href="${match}">${match}</a>`;
+      return `[url]${match}[/url]`;
     }
   );
 }
