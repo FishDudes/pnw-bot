@@ -122,8 +122,9 @@ export async function runBotCycle() {
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
-  } catch (error) {
-    console.error("Error in bot cycle:", error);
+  } catch (error: any) {
+    const detail = error?.response?.data ? JSON.stringify(error.response.data) : error?.message;
+    console.error("Error in bot cycle:", detail);
   }
 }
 
@@ -136,7 +137,7 @@ export function startBotService() {
   // Run immediately on start
   runBotCycle();
 
-  // Then every 1 minute
-  intervalId = setInterval(runBotCycle, 1 * 60 * 1000); 
-  console.log("Bot service started (1 minute interval).");
+  // Then every 2 minutes
+  intervalId = setInterval(runBotCycle, 2 * 60 * 1000); 
+  console.log("Bot service started (2 minute interval).");
 }
