@@ -1,6 +1,6 @@
 import { db } from "./db";
 import { botConfig, messagedNations, type BotConfig, type InsertBotConfig, type UpdateConfigRequest, type MessagedNation, type InsertMessagedNation } from "@shared/schema";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and } from "drizzle-orm";
 
 export interface IStorage {
   getConfig(): Promise<BotConfig | undefined>;
@@ -76,6 +76,16 @@ export class DatabaseStorage implements IStorage {
   async addLog(log: InsertMessagedNation): Promise<MessagedNation> {
     const [entry] = await db.insert(messagedNations)
       .values(log)
+      .onConflictDoUpdate({
+        target: messagedNations.nationId,
+        set: {
+          nationName: log.nationName,
+          leaderName: log.leaderName,
+          messagedAt: new Date(),
+          status: log.status,
+          error: log.error ?? null,
+        }
+      })
       .returning();
     return entry;
   }
@@ -83,7 +93,7 @@ export class DatabaseStorage implements IStorage {
   async hasMessagedNation(nationId: number): Promise<boolean> {
     const existing = await db.select()
       .from(messagedNations)
-      .where(eq(messagedNations.nationId, nationId))
+      .where(and(eq(messagedNations.nationId, nationId), eq(messagedNations.status, 'success')))
       .limit(1);
     return existing.length > 0;
   }
