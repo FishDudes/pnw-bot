@@ -1,5 +1,6 @@
 import axios from "axios";
 import { storage } from "./storage";
+import { autoLinkUrls } from "./urlLinker";
 
 const API_ENDPOINT = "https://politicsandwar.com/api/send-message/";
 const GRAPHQL_ENDPOINT = "https://api.politicsandwar.com/graphql";
@@ -80,7 +81,7 @@ export async function runBotCycle() {
       params.append('key', config.apiKey);
       params.append('to', nation.id);
       params.append('subject', config.subject);
-      params.append('message', config.messageTemplate);
+      params.append('message', autoLinkUrls(config.messageTemplate));
 
       try {
         const msgResponse = await axios.post(API_ENDPOINT, params);
