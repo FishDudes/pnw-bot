@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { startBotService, runBotCycle } from "./bot";
+import axios from "axios";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -43,13 +44,29 @@ export async function registerRoutes(
     res.json({ message: "Bot cycle triggered" });
   });
 
-  // Start the background service
-  startBotService();
-
-  // UptimeRobot health check endpoint
+  // Health check routes for UptimeRobot / Better Stack
   app.get("/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
+
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "online", bot: "running", timestamp: new Date().toISOString() });
+  });
+
+  // Start the background bot service
+  startBotService();
+
+  // Self-ping every 4 minutes to keep the container alive
+  const port = parseInt(process.env.PORT || "5000", 10);
+  console.log("Bot is running");
+  setInterval(async () => {
+    try {
+      await axios.get(`http://localhost:${port}/api/health`);
+      console.log("Self-ping OK");
+    } catch (err) {
+      console.warn("Self-ping failed:", (err as Error).message);
+    }
+  }, 4 * 60 * 1000);
 
   return httpServer;
 }
