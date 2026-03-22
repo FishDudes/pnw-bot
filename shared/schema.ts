@@ -12,6 +12,7 @@ export const botConfig = pgTable("bot_config", {
   messageTemplate: text("message_template").notNull().default("Welcome to Politics and War!"),
   isActive: boolean("is_active").notNull().default(false),
   lastRunAt: timestamp("last_run_at"),
+  lastNationId: integer("last_nation_id"),
 });
 
 // Store history of messaged nations to avoid duplicates

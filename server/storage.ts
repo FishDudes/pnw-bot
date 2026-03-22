@@ -7,6 +7,7 @@ export interface IStorage {
   updateConfig(config: UpdateConfigRequest): Promise<BotConfig>;
   toggleBot(isActive: boolean): Promise<BotConfig>;
   updateLastRun(): Promise<void>;
+  updateLastNationId(nationId: number): Promise<void>;
   
   getLogs(): Promise<MessagedNation[]>;
   addLog(log: InsertMessagedNation): Promise<MessagedNation>;
@@ -62,6 +63,15 @@ export class DatabaseStorage implements IStorage {
     if (existing) {
       await db.update(botConfig)
         .set({ lastRunAt: new Date() })
+        .where(eq(botConfig.id, existing.id));
+    }
+  }
+
+  async updateLastNationId(nationId: number): Promise<void> {
+    const existing = await this.getConfig();
+    if (existing) {
+      await db.update(botConfig)
+        .set({ lastNationId: nationId })
         .where(eq(botConfig.id, existing.id));
     }
   }
