@@ -199,10 +199,20 @@ export async function runBotCycle() {
         }
       }
 
-      // Skip if already successfully messaged
-      const alreadySucceeded = await storage.hasMessagedNation(nationId);
-      if (alreadySucceeded) {
-        console.log(`Nation ${nationId} (${nation.nation_name}) already messaged. Skipping.`);
+      // Quick pre-check: skip if already claimed (pending/success) or succeeded.
+      // The real guard is claimNation below, but this avoids unnecessary DB writes.
+      const alreadyClaimed = await storage.hasMessagedNation(nationId);
+      if (alreadyClaimed) {
+        console.log(`Nation ${nationId} (${nation.nation_name}) already claimed/messaged. Skipping.`);
+        continue;
+      }
+
+      // Atomically claim this nation in the DB BEFORE sending the message.
+      // Uses INSERT ... ON CONFLICT DO NOTHING — if two server processes are
+      // running simultaneously, only ONE wins the insert and proceeds to send.
+      const claimed = await storage.claimNation(nationId, nation.nation_name, nation.leader_name);
+      if (!claimed) {
+        console.log(`Nation ${nationId} (${nation.nation_name}) already claimed by another process. Skipping.`);
         continue;
       }
 
@@ -213,6 +223,7 @@ export async function runBotCycle() {
 
       const result = await sendMessage(nationId, nation.nation_name, nation.leader_name, config);
 
+      // Update the pending record to success or failed
       await storage.upsertLog({
         nationId,
         nationName: nation.nation_name,

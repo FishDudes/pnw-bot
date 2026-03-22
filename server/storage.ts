@@ -1,6 +1,6 @@
 import { db } from "./db";
 import { botConfig, messagedNations, type BotConfig, type InsertBotConfig, type UpdateConfigRequest, type MessagedNation, type InsertMessagedNation } from "@shared/schema";
-import { eq, desc, and } from "drizzle-orm";
+import { eq, desc, and, or, lt, ne } from "drizzle-orm";
 
 export interface IStorage {
   getConfig(): Promise<BotConfig | undefined>;
@@ -10,9 +10,15 @@ export interface IStorage {
   updateLastNationId(nationId: number): Promise<void>;
   
   getLogs(): Promise<MessagedNation[]>;
-  // Upsert: insert if new, update status/error/messagedAt if already exists
   upsertLog(log: InsertMessagedNation): Promise<MessagedNation>;
+  // Atomically claim a nation slot BEFORE sending. Returns true if this process
+  // won the claim (INSERT succeeded), false if another process already claimed it.
+  claimNation(nationId: number, nationName: string, leaderName: string): Promise<boolean>;
+  // Returns true for 'pending' or 'success' — i.e., nation has been claimed or done.
+  // Returns false only for 'failed' so the retry queue can pick those up.
   hasMessagedNation(nationId: number): Promise<boolean>;
+  // Returns nations that need retrying: explicit failures OR pending records stuck
+  // for >10 minutes (which means the server crashed mid-send).
   getFailedNations(): Promise<MessagedNation[]>;
 }
 
@@ -84,9 +90,20 @@ export class DatabaseStorage implements IStorage {
       .limit(50);
   }
 
-  // Upsert: inserts a new log entry, or if the nationId already exists (unique constraint),
-  // updates the status, error, and messagedAt. This prevents duplicate DB rows and
-  // ensures retried nations update their record instead of creating a second one.
+  // Atomically claim a nation BEFORE sending the message.
+  // Uses INSERT ... ON CONFLICT DO NOTHING so that only one server process
+  // can claim a given nationId, even if multiple processes run simultaneously.
+  // Returns true if this process claimed it, false if already claimed.
+  async claimNation(nationId: number, nationName: string, leaderName: string): Promise<boolean> {
+    const rows = await db.insert(messagedNations)
+      .values({ nationId, nationName, leaderName, status: "pending" })
+      .onConflictDoNothing()
+      .returning();
+    return rows.length > 0;
+  }
+
+  // Update an existing record after the send attempt completes.
+  // Uses ON CONFLICT DO UPDATE so retries also work (overwrite pending/failed row).
   async upsertLog(log: InsertMessagedNation): Promise<MessagedNation> {
     const [entry] = await db.insert(messagedNations)
       .values(log)
@@ -104,26 +121,41 @@ export class DatabaseStorage implements IStorage {
     return entry;
   }
 
-  // Keep addLog as an alias for upsertLog so existing callers don't break
+  // Keep addLog as an alias for upsertLog so any existing callers don't break
   async addLog(log: InsertMessagedNation): Promise<MessagedNation> {
     return this.upsertLog(log);
   }
 
-  // Returns true only if a SUCCESS record exists — failed nations return false
-  // so they can be picked up by the retry queue
+  // Returns true for 'pending' or 'success' status (nation has been claimed/sent).
+  // Returns false for 'failed' so the retry queue can pick those up.
+  // This is a belt-and-suspenders check; the real guard is claimNation.
   async hasMessagedNation(nationId: number): Promise<boolean> {
     const existing = await db.select()
       .from(messagedNations)
-      .where(and(eq(messagedNations.nationId, nationId), eq(messagedNations.status, 'success')))
+      .where(and(
+        eq(messagedNations.nationId, nationId),
+        ne(messagedNations.status, 'failed')
+      ))
       .limit(1);
     return existing.length > 0;
   }
 
-  // Returns all nations that previously failed, so the bot can retry them
+  // Returns nations that need to be retried:
+  //   - status = 'failed': explicit send failure
+  //   - status = 'pending' older than 10 min: server crashed after claiming but before updating
   async getFailedNations(): Promise<MessagedNation[]> {
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
     return await db.select()
       .from(messagedNations)
-      .where(eq(messagedNations.status, 'failed'));
+      .where(
+        or(
+          eq(messagedNations.status, 'failed'),
+          and(
+            eq(messagedNations.status, 'pending'),
+            lt(messagedNations.messagedAt, tenMinutesAgo)
+          )
+        )
+      );
   }
 }
 
