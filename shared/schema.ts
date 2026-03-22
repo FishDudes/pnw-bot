@@ -1,4 +1,4 @@
-import { pgTable, text, serial, boolean, timestamp, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, boolean, timestamp, integer, index, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -16,6 +16,7 @@ export const botConfig = pgTable("bot_config", {
 });
 
 // Store history of messaged nations to avoid duplicates
+// nationId is unique: each nation can only have one record (upserted on retry)
 export const messagedNations = pgTable("messaged_nations", {
   id: serial("id").primaryKey(),
   nationId: integer("nation_id").notNull(),
@@ -26,6 +27,7 @@ export const messagedNations = pgTable("messaged_nations", {
   error: text("error"),
 }, (table) => [
   index("idx_messaged_nations_nation_status").on(table.nationId, table.status),
+  unique("uq_messaged_nations_nation_id").on(table.nationId),
 ]);
 
 // === SCHEMAS ===
