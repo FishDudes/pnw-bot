@@ -56,12 +56,17 @@ export async function registerRoutes(
   // Start the background bot service
   startBotService();
 
-  // Self-ping every 4 minutes to keep the container alive
-  const port = parseInt(process.env.PORT || "5000", 10);
-  console.log("Bot is running");
+  // Self-ping every 4 minutes to keep the container alive.
+  // Uses the public Replit domain so the ping registers as real external traffic,
+  // which prevents the container from going to sleep.
+  const replitDomain = process.env.REPLIT_DOMAINS?.split(",")[0];
+  const pingUrl = replitDomain
+    ? `https://${replitDomain}/api/health`
+    : `http://localhost:${process.env.PORT || 5000}/api/health`;
+  console.log(`Bot is running. Keep-alive ping target: ${pingUrl}`);
   setInterval(async () => {
     try {
-      await axios.get(`http://localhost:${port}/api/health`);
+      await axios.get(pingUrl);
       console.log("Self-ping OK");
     } catch (err) {
       console.warn("Self-ping failed:", (err as Error).message);

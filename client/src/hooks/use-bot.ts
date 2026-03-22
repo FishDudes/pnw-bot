@@ -12,6 +12,7 @@ export function useConfig() {
       if (!res.ok) throw new Error("Failed to fetch configuration");
       return api.config.get.responses[200].parse(await res.json());
     },
+    refetchInterval: 15000, // Refresh every 15 seconds so "last run" time stays current
   });
 }
 
