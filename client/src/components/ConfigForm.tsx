@@ -4,30 +4,38 @@ import { z } from "zod";
 import { updateConfigSchema } from "@shared/schema";
 import { useConfig, useUpdateConfig } from "@/hooks/use-bot";
 import { useEffect } from "react";
-import { Settings, Save, Lock, MessageSquare, FileText } from "lucide-react";
+import { Settings, Save, Lock, MessageSquare, FileText, Timer } from "lucide-react";
 
-type ConfigFormValues = z.infer<typeof updateConfigSchema>;
+const formSchema = updateConfigSchema.extend({
+  scanInterval: z.number().min(1).max(3).default(2),
+});
+
+type ConfigFormValues = z.infer<typeof formSchema>;
 
 export function ConfigForm() {
   const { data: config, isLoading } = useConfig();
   const updateConfig = useUpdateConfig();
 
   const form = useForm<ConfigFormValues>({
-    resolver: zodResolver(updateConfigSchema),
+    resolver: zodResolver(formSchema),
     defaultValues: {
       apiKey: "",
       subject: "",
       messageTemplate: "",
+      scanInterval: 2,
     },
   });
 
-  // Reset form when config loads
+  const scanInterval = form.watch("scanInterval") ?? 2;
+  const sliderPct = ((scanInterval - 1) / 2) * 100;
+
   useEffect(() => {
     if (config) {
       form.reset({
         apiKey: config.apiKey,
         subject: config.subject,
         messageTemplate: config.messageTemplate,
+        scanInterval: config.scanInterval ?? 2,
       });
     }
   }, [config, form]);
@@ -60,6 +68,7 @@ export function ConfigForm() {
           </label>
           <input
             {...form.register("apiKey")}
+            data-testid="input-api-key"
             type="password"
             placeholder="Paste your Politics & War API Key"
             className="input-field font-mono text-sm"
@@ -75,6 +84,7 @@ export function ConfigForm() {
           </label>
           <input
             {...form.register("subject")}
+            data-testid="input-subject"
             placeholder="Welcome message subject"
             className="input-field"
           />
@@ -89,6 +99,7 @@ export function ConfigForm() {
           </label>
           <textarea
             {...form.register("messageTemplate")}
+            data-testid="input-message-template"
             placeholder="Enter your welcome message... HTML is supported (e.g., <b>bold text</b>)."
             className="input-field min-h-[150px] resize-none flex-1 font-mono text-sm leading-relaxed"
           />
@@ -100,10 +111,48 @@ export function ConfigForm() {
           </p>
         </div>
 
+        {/* Scan Interval Slider */}
+        <div className="space-y-3 pt-1">
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+              <Timer className="w-3.5 h-3.5" /> Scan Interval
+            </label>
+            <span
+              data-testid="text-scan-interval"
+              className="text-sm font-semibold text-primary tabular-nums"
+            >
+              {scanInterval} {scanInterval === 1 ? "minute" : "minutes"}
+            </span>
+          </div>
+          <div className="px-1">
+            <input
+              type="range"
+              min={1}
+              max={3}
+              step={1}
+              data-testid="slider-scan-interval"
+              className="w-full h-2 rounded-full appearance-none cursor-pointer"
+              style={{
+                background: `linear-gradient(to right, hsl(var(--primary)) 0%, hsl(var(--primary)) ${sliderPct}%, hsl(var(--muted)) ${sliderPct}%, hsl(var(--muted)) 100%)`,
+              }}
+              {...form.register("scanInterval", { valueAsNumber: true })}
+            />
+            <div className="flex justify-between mt-1.5">
+              <span className="text-xs text-muted-foreground">1 min</span>
+              <span className="text-xs text-muted-foreground">2 min</span>
+              <span className="text-xs text-muted-foreground">3 min</span>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            How often the bot scans for new nations. Takes effect after the current cycle completes.
+          </p>
+        </div>
+
         <div className="pt-4 border-t border-white/5">
           <button
             type="submit"
             disabled={updateConfig.isPending}
+            data-testid="button-save-config"
             className="btn-primary w-full gap-2"
           >
             {updateConfig.isPending ? (

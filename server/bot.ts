@@ -5,8 +5,7 @@ import { autoLinkUrls } from "./urlLinker";
 const API_ENDPOINT = "https://politicsandwar.com/api/send-message/";
 const GRAPHQL_ENDPOINT = "https://api.politicsandwar.com/graphql";
 
-// Fetch up to 500 recent nations — large enough to catch up after a long outage
-// (P&W creates ~10–20 nations/hour; 500 covers ~25–50 hours of downtime)
+// Fetch recent nations — 500 is enough to cover any realistic band window
 const NEW_NATIONS_QUERY = `
   query {
     nations(first: 500, orderBy: {column: DATE, order: DESC}) {
@@ -21,8 +20,32 @@ const NEW_NATIONS_QUERY = `
   }
 `;
 
-// Mutex: prevents two cycles from running concurrently (e.g. auto + manual trigger)
+// ── Scanning band constants ────────────────────────────────────────────────
+// Every cycle scans [lastNationId - BAND_BELOW, lastNationId + BAND_ABOVE].
+// This catches gap IDs (nations created slightly out of order) and ensures
+// new nations above the current max are also covered.
+const BAND_BELOW = 20;
+const BAND_ABOVE = 10;
+
+// Mutex: prevents two cycles from running concurrently in the same process
 let cycleRunning = false;
+
+// ── Scheduler ─────────────────────────────────────────────────────────────
+// Uses recursive setTimeout so the interval can change between cycles by
+// re-reading scanInterval from the database each time.
+let schedulerActive = false;
+let schedulerTimeout: NodeJS.Timeout | null = null;
+
+async function scheduleNextRun() {
+  if (!schedulerActive) return;
+  const config = await storage.getConfig();
+  const intervalMinutes = Math.max(1, Math.min(3, config?.scanInterval ?? 2));
+  const intervalMs = intervalMinutes * 60 * 1000;
+  schedulerTimeout = setTimeout(async () => {
+    await runBotCycle();
+    scheduleNextRun();
+  }, intervalMs);
+}
 
 // Helper: send a message to one nation; returns { success, error }
 async function sendMessage(
@@ -54,36 +77,24 @@ async function sendMessage(
 }
 
 export async function runBotCycle() {
-  // Prevent concurrent cycles — if one is already running, skip
+  // Prevent concurrent cycles within the same process
   if (cycleRunning) {
     console.log("Cycle already running. Skipping this trigger to prevent duplicates.");
     return;
   }
   cycleRunning = true;
-
   console.log("Starting bot cycle...");
 
   try {
     const config = await storage.getConfig();
 
-    if (!config) {
-      console.log("No configuration found. Skipping cycle.");
-      return;
-    }
-
-    if (!config.isActive) {
-      console.log("Bot is inactive. Skipping cycle.");
-      return;
-    }
-
-    if (!config.apiKey) {
-      console.log("No API key configured. Skipping cycle.");
-      return;
-    }
+    if (!config) { console.log("No config found. Skipping."); return; }
+    if (!config.isActive) { console.log("Bot is inactive. Skipping."); return; }
+    if (!config.apiKey) { console.log("No API key configured. Skipping."); return; }
 
     await storage.updateLastRun();
 
-    // ── PHASE 1: Retry previously failed nations ──────────────────────────────
+    // ── PHASE 1: Retry previously failed / stuck-pending nations ─────────────
     const failedNations = await storage.getFailedNations();
     if (failedNations.length > 0) {
       console.log(`Retrying ${failedNations.length} previously failed nation(s)...`);
@@ -92,7 +103,6 @@ export async function runBotCycle() {
         const result = await sendMessage(
           failed.nationId, failed.nationName, failed.leaderName ?? "", config
         );
-
         await storage.upsertLog({
           nationId: failed.nationId,
           nationName: failed.nationName,
@@ -100,20 +110,17 @@ export async function runBotCycle() {
           status: result.success ? "success" : "failed",
           error: result.success ? null : result.error,
         });
-
         if (result.success) {
           console.log(`Retry successful: ${failed.nationName}`);
         } else {
           console.error(`Retry failed for ${failed.nationName}: ${result.error}`);
         }
-
-        // Small delay between retries
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
 
-    // ── PHASE 2: Fetch and message new nations ────────────────────────────────
-    console.log("Fetching new nations...");
+    // ── PHASE 2: Fetch recent nations from P&W ────────────────────────────────
+    console.log("Fetching recent nations from P&W...");
     let graphqlResponse;
     try {
       graphqlResponse = await axios.post(
@@ -134,9 +141,7 @@ export async function runBotCycle() {
     } catch (error: any) {
       const responseData = error?.response?.data;
       if (responseData && typeof responseData === "string" && responseData.includes("Just a moment")) {
-        console.error(
-          "Bot cycle blocked by Cloudflare challenge on P&W API. Will retry next cycle."
-        );
+        console.error("Blocked by Cloudflare. Will retry next cycle.");
       } else {
         const detail = responseData
           ? JSON.stringify(responseData).substring(0, 300)
@@ -146,84 +151,72 @@ export async function runBotCycle() {
       return;
     }
 
-    // Detect Cloudflare challenge returned as 200 with HTML body
     const responseData = graphqlResponse.data;
     if (typeof responseData === "string" && responseData.includes("Just a moment")) {
-      console.error(
-        "Bot cycle blocked by Cloudflare challenge on P&W API. Will retry next cycle."
-      );
+      console.error("Blocked by Cloudflare. Will retry next cycle.");
       return;
     }
 
     const nations = responseData?.data?.nations?.data;
     if (!nations || !Array.isArray(nations)) {
-      console.error(
-        "Invalid response from GraphQL API:",
-        JSON.stringify(responseData).substring(0, 200)
-      );
+      console.error("Invalid response from GraphQL API:", JSON.stringify(responseData).substring(0, 200));
       return;
     }
 
-    // Yesterday's date as a fallback filter for first-run (no cursor set yet)
-    const yesterdayStr = new Date(Date.now() - 24 * 60 * 60 * 1000)
-      .toISOString()
-      .split("T")[0];
+    // ── PHASE 3: Determine scan band ──────────────────────────────────────────
+    // Find the highest nation ID in this response
+    const maxIdInResponse = Math.max(...nations.map((n: any) => parseInt(n.id)));
+
+    // On first run (no lastNationId stored), anchor the band to the current max
+    if (config.lastNationId === null || config.lastNationId === undefined) {
+      await storage.updateLastNationId(maxIdInResponse);
+      config.lastNationId = maxIdInResponse;
+      console.log(`First run: anchored scan baseline to nationId ${maxIdInResponse}`);
+    }
+
+    // If new nations appeared above our baseline, advance it
+    if (maxIdInResponse > config.lastNationId) {
+      await storage.updateLastNationId(maxIdInResponse);
+      config.lastNationId = maxIdInResponse;
+      console.log(`Advanced baseline to ${maxIdInResponse}`);
+    }
+
+    const bandMin = config.lastNationId - BAND_BELOW;
+    const bandMax = config.lastNationId + BAND_ABOVE;
 
     console.log(
-      `Found ${nations.length} recent nations. lastNationId cursor: ${
-        config.lastNationId ?? "none (first run)"
-      }`
+      `Scanning band [${bandMin} – ${bandMax}] (baseline: ${config.lastNationId}, ` +
+      `response max: ${maxIdInResponse}, total fetched: ${nations.length})`
     );
 
-    // Track the highest nation ID seen this cycle to advance the cursor
-    let maxNationIdSeen = config.lastNationId ?? 0;
+    // ── PHASE 4: Message nations within the band ──────────────────────────────
     let newCount = 0;
 
     for (const nation of nations) {
       const nationId = parseInt(nation.id);
 
-      // Always track max ID regardless of filtering
-      if (nationId > maxNationIdSeen) {
-        maxNationIdSeen = nationId;
-      }
+      // Only process nations within the scan band
+      if (nationId < bandMin || nationId > bandMax) continue;
 
-      // Cursor filter: skip nations at or below our last-seen cursor
-      if (config.lastNationId !== null && config.lastNationId !== undefined) {
-        if (nationId <= config.lastNationId) {
-          continue;
-        }
-      } else {
-        // First run: filter to last 2 days by date string
-        if (nation.date < yesterdayStr) {
-          continue;
-        }
-      }
-
-      // Quick pre-check: skip if already claimed (pending/success) or succeeded.
-      // The real guard is claimNation below, but this avoids unnecessary DB writes.
+      // Quick pre-check: skip if already claimed (pending/success)
       const alreadyClaimed = await storage.hasMessagedNation(nationId);
       if (alreadyClaimed) {
         console.log(`Nation ${nationId} (${nation.nation_name}) already claimed/messaged. Skipping.`);
         continue;
       }
 
-      // Atomically claim this nation in the DB BEFORE sending the message.
-      // Uses INSERT ... ON CONFLICT DO NOTHING — if two server processes are
-      // running simultaneously, only ONE wins the insert and proceeds to send.
+      // Atomically claim this nation BEFORE sending — prevents cross-process double sends
       const claimed = await storage.claimNation(nationId, nation.nation_name, nation.leader_name);
       if (!claimed) {
-        console.log(`Nation ${nationId} (${nation.nation_name}) already claimed by another process. Skipping.`);
+        console.log(`Nation ${nationId} (${nation.nation_name}) claimed by another process. Skipping.`);
         continue;
       }
 
       newCount++;
-      console.log(
-        `Sending message to nation ${nationId} (${nation.nation_name}, founded ${nation.date})...`
-      );
+      console.log(`Sending to ${nation.nation_name} (${nationId}, founded ${nation.date})...`);
 
       const result = await sendMessage(nationId, nation.nation_name, nation.leader_name, config);
 
-      // Update the pending record to success or failed
       await storage.upsertLog({
         nationId,
         nationName: nation.nation_name,
@@ -238,34 +231,21 @@ export async function runBotCycle() {
         console.error(`Failed to message ${nation.nation_name}: ${result.error}`);
       }
 
-      // Small delay between messages to avoid hammering the API
       await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-
-    // Advance the cursor to the highest ID seen this cycle
-    if (maxNationIdSeen > (config.lastNationId ?? 0)) {
-      await storage.updateLastNationId(maxNationIdSeen);
-      console.log(`Updated lastNationId cursor to ${maxNationIdSeen}`);
     }
 
     console.log(`Cycle complete. Messaged ${newCount} new nation(s).`);
 
   } finally {
-    // Always release the mutex, even if an error occurs
     cycleRunning = false;
   }
 }
 
-// Start the interval
-let intervalId: NodeJS.Timeout | null = null;
-
 export function startBotService() {
-  if (intervalId) return;
+  if (schedulerActive) return;
+  schedulerActive = true;
 
-  // Run immediately on start
-  runBotCycle();
-
-  // Then every 2 minutes
-  intervalId = setInterval(runBotCycle, 2 * 60 * 1000);
-  console.log("Bot service started (2 minute interval).");
+  // Run immediately on start, then schedule repeating runs
+  runBotCycle().then(() => scheduleNextRun());
+  console.log("Bot service started. Interval is read from config each cycle.");
 }
