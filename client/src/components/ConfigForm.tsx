@@ -7,10 +7,17 @@ import { useEffect } from "react";
 import { Settings, Save, Lock, MessageSquare, FileText, Timer } from "lucide-react";
 
 const formSchema = updateConfigSchema.extend({
-  scanInterval: z.number().min(1).max(3).default(2),
+  scanInterval: z.number().min(60).max(180).default(120),
 });
 
 type ConfigFormValues = z.infer<typeof formSchema>;
+
+function formatSeconds(s: number): string {
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  if (sec === 0) return `${m}m`;
+  return `${m}m ${sec}s`;
+}
 
 export function ConfigForm() {
   const { data: config, isLoading } = useConfig();
@@ -22,12 +29,12 @@ export function ConfigForm() {
       apiKey: "",
       subject: "",
       messageTemplate: "",
-      scanInterval: 2,
+      scanInterval: 120,
     },
   });
 
-  const scanInterval = form.watch("scanInterval") ?? 2;
-  const sliderPct = ((scanInterval - 1) / 2) * 100;
+  const scanInterval = form.watch("scanInterval") ?? 120;
+  const sliderPct = ((scanInterval - 60) / 120) * 100;
 
   useEffect(() => {
     if (config) {
@@ -35,7 +42,7 @@ export function ConfigForm() {
         apiKey: config.apiKey,
         subject: config.subject,
         messageTemplate: config.messageTemplate,
-        scanInterval: config.scanInterval ?? 2,
+        scanInterval: config.scanInterval ?? 120,
       });
     }
   }, [config, form]);
@@ -121,14 +128,14 @@ export function ConfigForm() {
               data-testid="text-scan-interval"
               className="text-sm font-semibold text-primary tabular-nums"
             >
-              {scanInterval} {scanInterval === 1 ? "minute" : "minutes"}
+              {formatSeconds(scanInterval)}
             </span>
           </div>
           <div className="px-1">
             <input
               type="range"
-              min={1}
-              max={3}
+              min={60}
+              max={180}
               step={1}
               data-testid="slider-scan-interval"
               className="w-full h-2 rounded-full appearance-none cursor-pointer"
@@ -138,9 +145,11 @@ export function ConfigForm() {
               {...form.register("scanInterval", { valueAsNumber: true })}
             />
             <div className="flex justify-between mt-1.5">
-              <span className="text-xs text-muted-foreground">1 min</span>
-              <span className="text-xs text-muted-foreground">2 min</span>
-              <span className="text-xs text-muted-foreground">3 min</span>
+              <span className="text-xs text-muted-foreground">1m</span>
+              <span className="text-xs text-muted-foreground">1m 30s</span>
+              <span className="text-xs text-muted-foreground">2m</span>
+              <span className="text-xs text-muted-foreground">2m 30s</span>
+              <span className="text-xs text-muted-foreground">3m</span>
             </div>
           </div>
           <p className="text-xs text-muted-foreground">

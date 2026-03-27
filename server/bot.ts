@@ -39,8 +39,8 @@ let schedulerTimeout: NodeJS.Timeout | null = null;
 async function scheduleNextRun() {
   if (!schedulerActive) return;
   const config = await storage.getConfig();
-  const intervalMinutes = Math.max(1, Math.min(3, config?.scanInterval ?? 2));
-  const intervalMs = intervalMinutes * 60 * 1000;
+  const intervalSeconds = Math.max(60, Math.min(180, config?.scanInterval ?? 120));
+  const intervalMs = intervalSeconds * 1000;
   schedulerTimeout = setTimeout(async () => {
     await runBotCycle();
     scheduleNextRun();

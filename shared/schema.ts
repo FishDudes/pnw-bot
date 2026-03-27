@@ -13,7 +13,7 @@ export const botConfig = pgTable("bot_config", {
   isActive: boolean("is_active").notNull().default(false),
   lastRunAt: timestamp("last_run_at"),
   lastNationId: integer("last_nation_id"),
-  scanInterval: integer("scan_interval").notNull().default(2),
+  scanInterval: integer("scan_interval").notNull().default(120),
 });
 
 // Store history of messaged nations to avoid duplicates
