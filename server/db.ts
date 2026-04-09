@@ -5,11 +5,8 @@ import * as schema from "@shared/schema";
 const { Pool } = pg;
 
 if (!process.env.DATABASE_URL) {
-  console.warn("DATABASE_URL is missing; database features will be unavailable.");
+  throw new Error("DATABASE_URL must be set for the application to start.");
 }
 
-export const pool = process.env.DATABASE_URL
-  ? new Pool({ connectionString: process.env.DATABASE_URL })
-  : null;
-
-export const db = pool ? drizzle(pool, { schema }) : null;
+export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+export const db = drizzle(pool, { schema });
