@@ -41,3 +41,8 @@ waitForPort = 5000
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 20000
+
+[userenv]
+
+[userenv.shared]
+DATABASE_URL_OVERRIDE = "postgresql://postgres:password@helium/heliumdb?sslmode=require"
