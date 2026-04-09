@@ -3,11 +3,16 @@ import pg from "pg";
 import * as schema from "@shared/schema";
 
 const { Pool } = pg;
-const connectionString = process.env.DATABASE_URL;
+
+const connectionString = process.env.DATABASE_URL_OVERRIDE ?? process.env.DATABASE_URL;
 
 if (!connectionString) {
   throw new Error("DATABASE_URL must be set for the application to start.");
 }
 
-export const pool = new Pool({ connectionString });
+const ssl = connectionString.includes("sslmode=require")
+  ? { rejectUnauthorized: false }
+  : false;
+
+export const pool = new Pool({ connectionString, ssl });
 export const db = drizzle(pool, { schema });
