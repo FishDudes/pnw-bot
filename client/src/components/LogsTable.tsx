@@ -1,13 +1,13 @@
 import { useLogs } from "@/hooks/use-bot";
 import { format } from "date-fns";
-import { History, CheckCircle2, XCircle, Search } from "lucide-react";
+import { History, CheckCircle2, XCircle, Search, Users, UserCheck } from "lucide-react";
 import { useState } from "react";
 
 export function LogsTable() {
   const { data: logs, isLoading } = useLogs();
   const [search, setSearch] = useState("");
 
-  const filteredLogs = logs?.filter(log => 
+  const filteredLogs = logs?.filter(log =>
     log.nationName.toLowerCase().includes(search.toLowerCase()) ||
     log.leaderName?.toLowerCase().includes(search.toLowerCase()) ||
     log.nationId.toString().includes(search)
@@ -28,12 +28,13 @@ export function LogsTable() {
 
         <div className="relative w-full sm:w-64">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <input 
-            type="text" 
-            placeholder="Search nations..." 
+          <input
+            type="text"
+            placeholder="Search nations..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="input-field pl-9 py-2 text-sm"
+            data-testid="input-log-search"
           />
         </div>
       </div>
@@ -43,6 +44,7 @@ export function LogsTable() {
           <thead className="bg-secondary/50 sticky top-0 backdrop-blur-md z-10">
             <tr>
               <th className="px-6 py-4 font-semibold text-muted-foreground">Status</th>
+              <th className="px-6 py-4 font-semibold text-muted-foreground hidden lg:table-cell">Type</th>
               <th className="px-6 py-4 font-semibold text-muted-foreground">Nation</th>
               <th className="px-6 py-4 font-semibold text-muted-foreground hidden md:table-cell">Leader</th>
               <th className="px-6 py-4 font-semibold text-muted-foreground hidden sm:table-cell">Time</th>
@@ -52,7 +54,7 @@ export function LogsTable() {
           <tbody className="divide-y divide-white/5">
             {isLoading ? (
               <tr>
-                <td colSpan={5} className="px-6 py-12 text-center text-muted-foreground">
+                <td colSpan={6} className="px-6 py-12 text-center text-muted-foreground">
                   <div className="flex items-center justify-center gap-2">
                     <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
                     Loading logs...
@@ -61,13 +63,13 @@ export function LogsTable() {
               </tr>
             ) : filteredLogs.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-6 py-12 text-center text-muted-foreground">
+                <td colSpan={6} className="px-6 py-12 text-center text-muted-foreground">
                   No activity recorded yet.
                 </td>
               </tr>
             ) : (
               filteredLogs.map((log) => (
-                <tr key={log.id} className="hover:bg-white/5 transition-colors">
+                <tr key={log.id} className="hover:bg-white/5 transition-colors" data-testid={`row-log-${log.id}`}>
                   <td className="px-6 py-4">
                     {log.status === 'success' ? (
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
@@ -78,6 +80,19 @@ export function LogsTable() {
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20" title={log.error || "Unknown error"}>
                         <XCircle className="w-3 h-3" />
                         Failed
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-6 py-4 hidden lg:table-cell">
+                    {log.messageType === 'existing_player' ? (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20" data-testid={`badge-type-${log.id}`}>
+                        <UserCheck className="w-3 h-3" />
+                        Existing
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20" data-testid={`badge-type-${log.id}`}>
+                        <Users className="w-3 h-3" />
+                        New
                       </span>
                     )}
                   </td>

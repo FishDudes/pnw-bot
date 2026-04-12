@@ -8,12 +8,13 @@ export interface IStorage {
   toggleBot(isActive: boolean): Promise<BotConfig>;
   updateLastRun(): Promise<void>;
   updateLastNationId(nationId: number): Promise<void>;
-  
+
   getLogs(): Promise<MessagedNation[]>;
   upsertLog(log: InsertMessagedNation): Promise<MessagedNation>;
   // Atomically claim a nation slot BEFORE sending. Returns true if this process
   // won the claim (INSERT succeeded), false if another process already claimed it.
-  claimNation(nationId: number, nationName: string, leaderName: string): Promise<boolean>;
+  // messageType distinguishes which campaign sent the message.
+  claimNation(nationId: number, nationName: string, leaderName: string, messageType?: string): Promise<boolean>;
   // Returns true for 'pending' or 'success' — i.e., nation has been claimed or done.
   // Returns false only for 'failed' so the retry queue can pick those up.
   hasMessagedNation(nationId: number): Promise<boolean>;
@@ -54,11 +55,13 @@ export class DatabaseStorage implements IStorage {
       return updated;
     } else {
       const [created] = await db.insert(botConfig)
-        .values({ 
-            apiKey: "", 
-            subject: "Welcome", 
-            messageTemplate: "Welcome!", 
-            isActive 
+        .values({
+          apiKey: "",
+          subject: "Welcome",
+          messageTemplate: "Welcome!",
+          existingPlayerSubject: "",
+          existingPlayerMessageTemplate: "",
+          isActive,
         })
         .returning();
       return created;
@@ -87,16 +90,18 @@ export class DatabaseStorage implements IStorage {
     return await db.select()
       .from(messagedNations)
       .orderBy(desc(messagedNations.messagedAt))
-      .limit(50);
+      .limit(100);
   }
 
   // Atomically claim a nation BEFORE sending the message.
   // Uses INSERT ... ON CONFLICT DO NOTHING so that only one server process
   // can claim a given nationId, even if multiple processes run simultaneously.
+  // The UNIQUE constraint on nationId means a nation is only ever messaged once,
+  // regardless of which campaign (new_player or existing_player) claims it first.
   // Returns true if this process claimed it, false if already claimed.
-  async claimNation(nationId: number, nationName: string, leaderName: string): Promise<boolean> {
+  async claimNation(nationId: number, nationName: string, leaderName: string, messageType: string = "new_player"): Promise<boolean> {
     const rows = await db.insert(messagedNations)
-      .values({ nationId, nationName, leaderName, status: "pending" })
+      .values({ nationId, nationName, leaderName, status: "pending", messageType })
       .onConflictDoNothing()
       .returning();
     return rows.length > 0;
@@ -115,6 +120,7 @@ export class DatabaseStorage implements IStorage {
           messagedAt: new Date(),
           nationName: log.nationName,
           leaderName: log.leaderName,
+          messageType: log.messageType ?? "new_player",
         },
       })
       .returning();

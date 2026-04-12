@@ -10,22 +10,26 @@ export const botConfig = pgTable("bot_config", {
   apiKey: text("api_key").notNull(),
   subject: text("subject").notNull().default("Welcome!"),
   messageTemplate: text("message_template").notNull().default("Welcome to Politics and War!"),
+  existingPlayerSubject: text("existing_player_subject").notNull().default(""),
+  existingPlayerMessageTemplate: text("existing_player_message_template").notNull().default(""),
   isActive: boolean("is_active").notNull().default(false),
   lastRunAt: timestamp("last_run_at"),
   lastNationId: integer("last_nation_id"),
   scanInterval: integer("scan_interval").notNull().default(120),
 });
 
-// Store history of messaged nations to avoid duplicates
-// nationId is unique: each nation can only have one record (upserted on retry)
+// Store history of messaged nations to avoid duplicates.
+// nationId is unique: each nation can only have one record (upserted on retry).
+// messageType distinguishes which campaign sent the message: 'new_player' | 'existing_player'
 export const messagedNations = pgTable("messaged_nations", {
   id: serial("id").primaryKey(),
   nationId: integer("nation_id").notNull(),
   nationName: text("nation_name").notNull(),
   leaderName: text("leader_name"),
   messagedAt: timestamp("messaged_at").defaultNow().notNull(),
-  status: text("status").notNull(), // 'success', 'failed'
+  status: text("status").notNull(), // 'success', 'failed', 'pending'
   error: text("error"),
+  messageType: text("message_type").notNull().default("new_player"), // 'new_player' | 'existing_player'
 }, (table) => [
   index("idx_messaged_nations_nation_status").on(table.nationId, table.status),
   unique("uq_messaged_nations_nation_id").on(table.nationId),

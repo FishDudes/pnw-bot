@@ -4,7 +4,7 @@ import { z } from "zod";
 import { updateConfigSchema } from "@shared/schema";
 import { useConfig, useUpdateConfig } from "@/hooks/use-bot";
 import { useEffect } from "react";
-import { Settings, Save, Lock, MessageSquare, FileText, Timer } from "lucide-react";
+import { Settings, Save, Lock, MessageSquare, FileText, Timer, Users, UserCheck } from "lucide-react";
 
 const formSchema = updateConfigSchema.extend({
   scanInterval: z.number().min(60).max(180).default(120),
@@ -29,6 +29,8 @@ export function ConfigForm() {
       apiKey: "",
       subject: "",
       messageTemplate: "",
+      existingPlayerSubject: "",
+      existingPlayerMessageTemplate: "",
       scanInterval: 120,
     },
   });
@@ -42,6 +44,8 @@ export function ConfigForm() {
         apiKey: config.apiKey,
         subject: config.subject,
         messageTemplate: config.messageTemplate,
+        existingPlayerSubject: config.existingPlayerSubject ?? "",
+        existingPlayerMessageTemplate: config.existingPlayerMessageTemplate ?? "",
         scanInterval: config.scanInterval ?? 120,
       });
     }
@@ -68,7 +72,9 @@ export function ConfigForm() {
         <h2 className="text-xl font-bold">Bot Configuration</h2>
       </div>
 
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5 flex-1 flex flex-col">
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 flex-1 flex flex-col">
+
+        {/* API Key */}
         <div className="space-y-2">
           <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
             <Lock className="w-3.5 h-3.5" /> API Key
@@ -85,36 +91,85 @@ export function ConfigForm() {
           )}
         </div>
 
-        <div className="space-y-2">
-          <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-            <MessageSquare className="w-3.5 h-3.5" /> Subject
-          </label>
-          <input
-            {...form.register("subject")}
-            data-testid="input-subject"
-            placeholder="Welcome message subject"
-            className="input-field"
-          />
-          {form.formState.errors.subject && (
-            <p className="text-xs text-red-400 mt-1">{form.formState.errors.subject.message}</p>
-          )}
+        {/* ── New Player Template ─────────────────────────────────────────── */}
+        <div className="space-y-4 rounded-xl border border-blue-500/20 bg-blue-500/5 p-4">
+          <div className="flex items-center gap-2">
+            <Users className="w-4 h-4 text-blue-400" />
+            <span className="text-sm font-semibold text-blue-300">New Player Template</span>
+            <span className="ml-auto text-xs text-muted-foreground bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-full">
+              Brand-new nations
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+              <MessageSquare className="w-3.5 h-3.5" /> Subject
+            </label>
+            <input
+              {...form.register("subject")}
+              data-testid="input-subject"
+              placeholder="Welcome message subject"
+              className="input-field"
+            />
+            {form.formState.errors.subject && (
+              <p className="text-xs text-red-400 mt-1">{form.formState.errors.subject.message}</p>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+              <FileText className="w-3.5 h-3.5" /> Message Template
+            </label>
+            <textarea
+              {...form.register("messageTemplate")}
+              data-testid="input-message-template"
+              placeholder="Enter your new-player welcome message... HTML supported."
+              className="input-field min-h-[120px] resize-none font-mono text-sm leading-relaxed"
+            />
+            {form.formState.errors.messageTemplate && (
+              <p className="text-xs text-red-400 mt-1">{form.formState.errors.messageTemplate.message}</p>
+            )}
+          </div>
         </div>
 
-        <div className="space-y-2 flex-1 flex flex-col">
-          <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-            <FileText className="w-3.5 h-3.5" /> Message Template
-          </label>
-          <textarea
-            {...form.register("messageTemplate")}
-            data-testid="input-message-template"
-            placeholder="Enter your welcome message... HTML is supported (e.g., <b>bold text</b>)."
-            className="input-field min-h-[150px] resize-none flex-1 font-mono text-sm leading-relaxed"
-          />
-          {form.formState.errors.messageTemplate && (
-            <p className="text-xs text-red-400 mt-1">{form.formState.errors.messageTemplate.message}</p>
-          )}
+        {/* ── Existing Player Template ────────────────────────────────────── */}
+        <div className="space-y-4 rounded-xl border border-purple-500/20 bg-purple-500/5 p-4">
+          <div className="flex items-center gap-2">
+            <UserCheck className="w-4 h-4 text-purple-400" />
+            <span className="text-sm font-semibold text-purple-300">Existing Player Template</span>
+            <span className="ml-auto text-xs text-muted-foreground bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-full">
+              Unaligned · 15+ cities · active 7d
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground -mt-1">
+            Sent to established, unaligned nations with more than 15 cities who have logged in within the last 7 days and are not in vacation mode.
+          </p>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+              <MessageSquare className="w-3.5 h-3.5" /> Subject
+            </label>
+            <input
+              {...form.register("existingPlayerSubject")}
+              data-testid="input-existing-player-subject"
+              placeholder="Recruitment message subject"
+              className="input-field"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+              <FileText className="w-3.5 h-3.5" /> Message Template
+            </label>
+            <textarea
+              {...form.register("existingPlayerMessageTemplate")}
+              data-testid="input-existing-player-message-template"
+              placeholder="Enter your existing-player recruitment message... HTML supported."
+              className="input-field min-h-[120px] resize-none font-mono text-sm leading-relaxed"
+            />
+          </div>
           <p className="text-xs text-muted-foreground">
-            Supports HTML formatting. Use <b>&lt;b&gt;bold text&lt;/b&gt;</b> for bolding.
+            Leave both fields empty to disable this scanner. Supports HTML formatting.
           </p>
         </div>
 
@@ -153,7 +208,7 @@ export function ConfigForm() {
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            How often the bot scans for new nations. Takes effect after the current cycle completes.
+            Applies to both scanners. Takes effect after the current cycle completes.
           </p>
         </div>
 
