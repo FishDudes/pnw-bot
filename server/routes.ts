@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { startBotService, runBotCycle } from "./bot";
+import { pool } from "./db";
 import axios from "axios";
 
 export async function registerRoutes(
@@ -70,6 +71,13 @@ export async function registerRoutes(
       console.log("Self-ping OK");
     } catch (err) {
       console.warn("Self-ping failed:", (err as Error).message);
+    }
+    // Also run a lightweight DB query to keep the Neon connection endpoint
+    // from auto-suspending, which would block the Replit publish diff-check.
+    try {
+      await pool.query("SELECT 1");
+    } catch (err) {
+      console.warn("DB keepalive failed:", (err as Error).message);
     }
   }, 4 * 60 * 1000);
 
