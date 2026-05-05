@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { insertBotConfigSchema, botConfig, messagedNations, updateConfigSchema } from "./schema";
 
+export type { BotConfig, UpdateConfigRequest, MessagedNation } from "./schema";
+
 export const api = {
   config: {
     get: {

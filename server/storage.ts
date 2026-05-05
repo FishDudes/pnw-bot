@@ -1,5 +1,10 @@
 import { db } from "./db";
-import { botConfig, messagedNations, type BotConfig, type InsertBotConfig, type UpdateConfigRequest, type MessagedNation, type InsertMessagedNation } from "@shared/schema";
+import {
+  botConfig, messagedNations, trackedNewNations,
+  type BotConfig, type UpdateConfigRequest,
+  type MessagedNation, type InsertMessagedNation,
+  type TrackedNewNation,
+} from "@shared/schema";
 import { eq, desc, and, or, lt, ne } from "drizzle-orm";
 
 export interface IStorage {
@@ -11,16 +16,15 @@ export interface IStorage {
 
   getLogs(): Promise<MessagedNation[]>;
   upsertLog(log: InsertMessagedNation): Promise<MessagedNation>;
-  // Atomically claim a nation slot BEFORE sending. Returns true if this process
-  // won the claim (INSERT succeeded), false if another process already claimed it.
-  // messageType distinguishes which campaign sent the message.
   claimNation(nationId: number, nationName: string, leaderName: string, messageType?: string): Promise<boolean>;
-  // Returns true for 'pending' or 'success' — i.e., nation has been claimed or done.
-  // Returns false only for 'failed' so the retry queue can pick those up.
   hasMessagedNation(nationId: number): Promise<boolean>;
-  // Returns nations that need retrying: explicit failures OR pending records stuck
-  // for >10 minutes (which means the server crashed mid-send).
   getFailedNations(): Promise<MessagedNation[]>;
+
+  // Timed-mode tracking
+  addTrackedNation(nationId: number, nationName: string, leaderName: string): Promise<boolean>;
+  getTrackedWatchingNations(): Promise<TrackedNewNation[]>;
+  updateTrackedNationActivity(nationId: number, lastActiveAt: Date, wentOfflineAt: Date | null): Promise<void>;
+  markTrackedNationDone(nationId: number, status: 'sent' | 'expired'): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -93,12 +97,6 @@ export class DatabaseStorage implements IStorage {
       .limit(100);
   }
 
-  // Atomically claim a nation BEFORE sending the message.
-  // Uses INSERT ... ON CONFLICT DO NOTHING so that only one server process
-  // can claim a given nationId, even if multiple processes run simultaneously.
-  // The UNIQUE constraint on nationId means a nation is only ever messaged once,
-  // regardless of which campaign (new_player or existing_player) claims it first.
-  // Returns true if this process claimed it, false if already claimed.
   async claimNation(nationId: number, nationName: string, leaderName: string, messageType: string = "new_player"): Promise<boolean> {
     const rows = await db.insert(messagedNations)
       .values({ nationId, nationName, leaderName, status: "pending", messageType })
@@ -107,8 +105,6 @@ export class DatabaseStorage implements IStorage {
     return rows.length > 0;
   }
 
-  // Update an existing record after the send attempt completes.
-  // Uses ON CONFLICT DO UPDATE so retries also work (overwrite pending/failed row).
   async upsertLog(log: InsertMessagedNation): Promise<MessagedNation> {
     const [entry] = await db.insert(messagedNations)
       .values(log)
@@ -127,14 +123,10 @@ export class DatabaseStorage implements IStorage {
     return entry;
   }
 
-  // Keep addLog as an alias for upsertLog so any existing callers don't break
   async addLog(log: InsertMessagedNation): Promise<MessagedNation> {
     return this.upsertLog(log);
   }
 
-  // Returns true for 'pending' or 'success' status (nation has been claimed/sent).
-  // Returns false for 'failed' so the retry queue can pick those up.
-  // This is a belt-and-suspenders check; the real guard is claimNation.
   async hasMessagedNation(nationId: number): Promise<boolean> {
     const existing = await db.select()
       .from(messagedNations)
@@ -146,9 +138,6 @@ export class DatabaseStorage implements IStorage {
     return existing.length > 0;
   }
 
-  // Returns nations that need to be retried:
-  //   - status = 'failed': explicit send failure
-  //   - status = 'pending' older than 10 min: server crashed after claiming but before updating
   async getFailedNations(): Promise<MessagedNation[]> {
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
     return await db.select()
@@ -162,6 +151,40 @@ export class DatabaseStorage implements IStorage {
           )
         )
       );
+  }
+
+  // ── Timed-mode tracking ──────────────────────────────────────────────────
+
+  // Insert a new tracked nation. Returns true if inserted (new), false if already tracked.
+  async addTrackedNation(nationId: number, nationName: string, leaderName: string): Promise<boolean> {
+    const rows = await db.insert(trackedNewNations)
+      .values({ nationId, nationName, leaderName, status: "watching" })
+      .onConflictDoNothing()
+      .returning();
+    return rows.length > 0;
+  }
+
+  async getTrackedWatchingNations(): Promise<TrackedNewNation[]> {
+    return await db.select()
+      .from(trackedNewNations)
+      .where(eq(trackedNewNations.status, "watching"));
+  }
+
+  // Update activity snapshot. Pass wentOfflineAt=null to clear it (back online without triggering send).
+  async updateTrackedNationActivity(
+    nationId: number,
+    lastActiveAt: Date,
+    wentOfflineAt: Date | null
+  ): Promise<void> {
+    await db.update(trackedNewNations)
+      .set({ lastActiveAt, wentOfflineAt })
+      .where(eq(trackedNewNations.nationId, nationId));
+  }
+
+  async markTrackedNationDone(nationId: number, status: 'sent' | 'expired'): Promise<void> {
+    await db.update(trackedNewNations)
+      .set({ status })
+      .where(eq(trackedNewNations.nationId, nationId));
   }
 }
 

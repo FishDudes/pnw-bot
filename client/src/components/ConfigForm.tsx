@@ -4,7 +4,7 @@ import { z } from "zod";
 import { updateConfigSchema } from "@shared/schema";
 import { useConfig, useUpdateConfig } from "@/hooks/use-bot";
 import { useEffect } from "react";
-import { Settings, Save, Lock, MessageSquare, FileText, Timer, Users, UserCheck } from "lucide-react";
+import { Settings, Save, Lock, MessageSquare, FileText, Timer, Users, UserCheck, Zap, Clock } from "lucide-react";
 
 const formSchema = updateConfigSchema.extend({
   scanInterval: z.number().min(60).max(180).default(120),
@@ -32,10 +32,12 @@ export function ConfigForm() {
       existingPlayerSubject: "",
       existingPlayerMessageTemplate: "",
       scanInterval: 120,
+      newNationRecruitMode: "instant",
     },
   });
 
   const scanInterval = form.watch("scanInterval") ?? 120;
+  const recruitMode = form.watch("newNationRecruitMode") ?? "instant";
   const sliderPct = ((scanInterval - 60) / 120) * 100;
 
   useEffect(() => {
@@ -47,6 +49,7 @@ export function ConfigForm() {
         existingPlayerSubject: config.existingPlayerSubject ?? "",
         existingPlayerMessageTemplate: config.existingPlayerMessageTemplate ?? "",
         scanInterval: config.scanInterval ?? 120,
+        newNationRecruitMode: config.newNationRecruitMode ?? "instant",
       });
     }
   }, [config, form]);
@@ -93,12 +96,57 @@ export function ConfigForm() {
 
         {/* ── New Player Template ─────────────────────────────────────────── */}
         <div className="space-y-4 rounded-xl border border-blue-500/20 bg-blue-500/5 p-4">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <Users className="w-4 h-4 text-blue-400" />
             <span className="text-sm font-semibold text-blue-300">New Player Template</span>
             <span className="ml-auto text-xs text-muted-foreground bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-full">
               Brand-new nations
             </span>
+          </div>
+
+          {/* Recruit Mode Toggle */}
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-muted-foreground">Recruitment Mode</p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                data-testid="button-mode-instant"
+                onClick={() => form.setValue("newNationRecruitMode", "instant")}
+                className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm font-medium transition-all ${
+                  recruitMode === "instant"
+                    ? "bg-blue-500/20 border-blue-500/50 text-blue-300"
+                    : "bg-transparent border-white/10 text-muted-foreground hover:border-white/20"
+                }`}
+              >
+                <Zap className="w-3.5 h-3.5 shrink-0" />
+                <span className="text-left leading-tight">
+                  <span className="block">Instant</span>
+                  <span className="text-xs opacity-70">Message on first sight</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                data-testid="button-mode-timed"
+                onClick={() => form.setValue("newNationRecruitMode", "timed")}
+                className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm font-medium transition-all ${
+                  recruitMode === "timed"
+                    ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
+                    : "bg-transparent border-white/10 text-muted-foreground hover:border-white/20"
+                }`}
+              >
+                <Clock className="w-3.5 h-3.5 shrink-0" />
+                <span className="text-left leading-tight">
+                  <span className="block">Timed</span>
+                  <span className="text-xs opacity-70">Send on return login</span>
+                </span>
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {recruitMode === "timed"
+                ? "Tracks new nations and sends the moment they return online after going offline for ≥5 min — message appears first in their inbox."
+                : "Messages new nations immediately when they appear in the scan band."}
+            </p>
+            <input type="hidden" {...form.register("newNationRecruitMode")} />
           </div>
 
           <div className="space-y-2">
@@ -179,10 +227,7 @@ export function ConfigForm() {
             <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
               <Timer className="w-3.5 h-3.5" /> Scan Interval
             </label>
-            <span
-              data-testid="text-scan-interval"
-              className="text-sm font-semibold text-primary tabular-nums"
-            >
+            <span data-testid="text-scan-interval" className="text-sm font-semibold text-primary tabular-nums">
               {formatSeconds(scanInterval)}
             </span>
           </div>
@@ -208,7 +253,7 @@ export function ConfigForm() {
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Applies to both scanners. Takes effect after the current cycle completes.
+            Applies to all scanners. Takes effect after the current cycle completes.
           </p>
         </div>
 

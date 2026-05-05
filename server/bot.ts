@@ -5,7 +5,9 @@ import { autoLinkUrls } from "./urlLinker";
 const API_ENDPOINT = "https://politicsandwar.com/api/send-message/";
 const GRAPHQL_ENDPOINT = "https://api.politicsandwar.com/graphql";
 
-// ── New-nation scan query (most recent 500 by creation date) ────────────────
+// ── GraphQL queries ──────────────────────────────────────────────────────────
+
+// Instant-mode: most recent 500 nations by creation date
 const NEW_NATIONS_QUERY = `
   query {
     nations(first: 500, orderBy: {column: DATE, order: DESC}) {
@@ -15,14 +17,13 @@ const NEW_NATIONS_QUERY = `
         leader_name
         date
         alliance_id
+        last_active
       }
     }
   }
 `;
 
-// ── Existing-player scan query ──────────────────────────────────────────────
-// Fetches up to 500 unaligned nations ordered by most-recently-active first.
-// Client-side filters then enforce: >15 cities, not in vacation mode, active ≤7 days.
+// Existing-player scan: unaligned nations for recruitment
 const EXISTING_PLAYER_QUERY = `
   query {
     nations(first: 500, alliance_id: 0, orderBy: {column: DATE, order: DESC}) {
@@ -39,31 +40,48 @@ const EXISTING_PLAYER_QUERY = `
   }
 `;
 
-// ── Scanning band constants (new-nation scanner) ────────────────────────────
+// Build a targeted activity query for specific nation IDs (timed mode)
+function buildActivityQuery(nationIds: number[]): string {
+  return `
+    query {
+      nations(id: [${nationIds.join(",")}], first: 500) {
+        data {
+          id
+          nation_name
+          leader_name
+          last_active
+        }
+      }
+    }
+  `;
+}
+
+// ── Constants ────────────────────────────────────────────────────────────────
 const BAND_BELOW = 20;
 const BAND_ABOVE = 10;
 
-// Mutex: prevents two cycles from running concurrently in the same process
+// Timed-mode thresholds
+const ONLINE_THRESHOLD_MS  = 10 * 60 * 1000;  // last_active within 10 min → "online"
+const MIN_OFFLINE_MS       =  5 * 60 * 1000;  // must be offline ≥ 5 min before re-trigger
+const TRACKING_EXPIRY_MS   =  6 * 60 * 60 * 1000; // 6h max watch time before fallback send
+
+// ── Concurrency guard ────────────────────────────────────────────────────────
 let cycleRunning = false;
 
-// ── Scheduler ───────────────────────────────────────────────────────────────
-// Uses recursive setTimeout so the interval can change between cycles by
-// re-reading scanInterval from the database each time.
+// ── Scheduler ────────────────────────────────────────────────────────────────
 let schedulerActive = false;
-let schedulerTimeout: NodeJS.Timeout | null = null;
 
 async function scheduleNextRun() {
   if (!schedulerActive) return;
   const config = await storage.getConfig();
   const intervalSeconds = Math.max(60, Math.min(180, config?.scanInterval ?? 120));
-  const intervalMs = intervalSeconds * 1000;
-  schedulerTimeout = setTimeout(async () => {
+  setTimeout(async () => {
     await runBotCycle();
     scheduleNextRun();
-  }, intervalMs);
+  }, intervalSeconds * 1000);
 }
 
-// Helper: send a message to one nation; returns { success, error }
+// ── Message sender ───────────────────────────────────────────────────────────
 async function sendMessage(
   nationId: number,
   nationName: string,
@@ -77,13 +95,9 @@ async function sendMessage(
   params.append("message", autoLinkUrls(config.messageTemplate));
 
   try {
-    const msgResponse = await axios.post(API_ENDPOINT, params, { timeout: 15000 });
-    if (msgResponse.data.success) {
-      return { success: true };
-    } else {
-      const errorMsg = msgResponse.data.message || "Unknown error from P&W API";
-      return { success: false, error: errorMsg };
-    }
+    const res = await axios.post(API_ENDPOINT, params, { timeout: 15000 });
+    if (res.data.success) return { success: true };
+    return { success: false, error: res.data.message || "Unknown error from P&W API" };
   } catch (error: any) {
     const detail = error?.response?.data
       ? JSON.stringify(error.response.data).substring(0, 200)
@@ -92,11 +106,8 @@ async function sendMessage(
   }
 }
 
-// ── Helper: fetch nations from GraphQL ──────────────────────────────────────
-async function fetchNationsFromGraphQL(
-  query: string,
-  apiKey: string
-): Promise<any[] | null> {
+// ── GraphQL fetcher ──────────────────────────────────────────────────────────
+async function fetchNationsFromGraphQL(query: string, apiKey: string): Promise<any[] | null> {
   let response;
   try {
     response = await axios.post(
@@ -106,8 +117,7 @@ async function fetchNationsFromGraphQL(
         headers: {
           "Content-Type": "application/json",
           "Accept": "application/json",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
           "Origin": "https://politicsandwar.com",
           "Referer": "https://politicsandwar.com/",
         },
@@ -115,14 +125,13 @@ async function fetchNationsFromGraphQL(
       }
     );
   } catch (error: any) {
-    const responseData = error?.response?.data;
-    if (responseData && typeof responseData === "string" && responseData.includes("Just a moment")) {
+    const data = error?.response?.data;
+    if (data && typeof data === "string" && data.includes("Just a moment")) {
       console.error("Blocked by Cloudflare. Will retry next cycle.");
     } else {
-      const detail = responseData
-        ? JSON.stringify(responseData).substring(0, 300)
-        : error?.message;
-      console.error("Error fetching nations from GraphQL:", detail);
+      console.error("GraphQL fetch error:", data
+        ? JSON.stringify(data).substring(0, 300)
+        : error?.message);
     }
     return null;
   }
@@ -142,50 +151,14 @@ async function fetchNationsFromGraphQL(
   return nations;
 }
 
-// ── New-nation scan ──────────────────────────────────────────────────────────
-async function runNewNationScan(config: Awaited<ReturnType<typeof storage.getConfig>>) {
-  if (!config) return;
-
-  // ── PHASE 1: Retry previously failed / stuck-pending nations ──────────────
-  const failedNations = await storage.getFailedNations();
-  if (failedNations.length > 0) {
-    console.log(`[New] Retrying ${failedNations.length} previously failed nation(s)...`);
-    for (const failed of failedNations) {
-      if (failed.messageType !== "new_player") continue; // each scanner retries its own type
-      console.log(`[New] Retrying ${failed.nationId} (${failed.nationName})...`);
-      const result = await sendMessage(
-        failed.nationId, failed.nationName, failed.leaderName ?? "",
-        { apiKey: config.apiKey, subject: config.subject, messageTemplate: config.messageTemplate }
-      );
-      await storage.upsertLog({
-        nationId: failed.nationId,
-        nationName: failed.nationName,
-        leaderName: failed.leaderName ?? "",
-        status: result.success ? "success" : "failed",
-        error: result.success ? null : result.error,
-        messageType: "new_player",
-      });
-      if (result.success) {
-        console.log(`[New] Retry successful: ${failed.nationName}`);
-      } else {
-        console.error(`[New] Retry failed for ${failed.nationName}: ${result.error}`);
-      }
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-
-  // ── PHASE 2: Fetch recent nations ─────────────────────────────────────────
-  console.log("[New] Fetching recent nations from P&W...");
-  const nations = await fetchNationsFromGraphQL(NEW_NATIONS_QUERY, config.apiKey);
-  if (!nations) return;
-
-  // ── PHASE 3: Determine scan band ──────────────────────────────────────────
+// ── Band helper ───────────────────────────────────────────────────────────────
+async function resolveBand(nations: any[], config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>): Promise<{ bandMin: number; bandMax: number }> {
   const maxIdInResponse = Math.max(...nations.map((n: any) => parseInt(n.id)));
 
   if (config.lastNationId === null || config.lastNationId === undefined) {
     await storage.updateLastNationId(maxIdInResponse);
     config.lastNationId = maxIdInResponse;
-    console.log(`[New] First run: anchored scan baseline to nationId ${maxIdInResponse}`);
+    console.log(`[New] First run: anchored baseline to ${maxIdInResponse}`);
   }
 
   if (maxIdInResponse > config.lastNationId) {
@@ -194,191 +167,277 @@ async function runNewNationScan(config: Awaited<ReturnType<typeof storage.getCon
     console.log(`[New] Advanced baseline to ${maxIdInResponse}`);
   }
 
-  const bandMin = config.lastNationId - BAND_BELOW;
-  const bandMax = config.lastNationId + BAND_ABOVE;
+  return {
+    bandMin: config.lastNationId - BAND_BELOW,
+    bandMax: config.lastNationId + BAND_ABOVE,
+  };
+}
 
-  console.log(
-    `[New] Scanning band [${bandMin} – ${bandMax}] (baseline: ${config.lastNationId}, ` +
-    `response max: ${maxIdInResponse}, total fetched: ${nations.length})`
-  );
+// ════════════════════════════════════════════════════════════════════════════
+// MODE A — Instant new-nation scan (original behaviour)
+// ════════════════════════════════════════════════════════════════════════════
+async function runInstantNewNationScan(config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>) {
+  // Retry previously failed new-player sends
+  const failed = await storage.getFailedNations();
+  for (const f of failed) {
+    if (f.messageType !== "new_player") continue;
+    console.log(`[Instant] Retrying ${f.nationId} (${f.nationName})...`);
+    const result = await sendMessage(f.nationId, f.nationName, f.leaderName ?? "",
+      { apiKey: config.apiKey, subject: config.subject, messageTemplate: config.messageTemplate });
+    await storage.upsertLog({
+      nationId: f.nationId, nationName: f.nationName, leaderName: f.leaderName ?? "",
+      status: result.success ? "success" : "failed",
+      error: result.success ? null : result.error,
+      messageType: "new_player",
+    });
+    console.log(result.success ? `[Instant] Retry OK: ${f.nationName}` : `[Instant] Retry failed: ${f.nationName}: ${result.error}`);
+    await new Promise(r => setTimeout(r, 1000));
+  }
 
-  // ── PHASE 4: Message nations within the band ──────────────────────────────
-  let newCount = 0;
+  console.log("[Instant] Fetching recent nations...");
+  const nations = await fetchNationsFromGraphQL(NEW_NATIONS_QUERY, config.apiKey);
+  if (!nations) return;
+
+  const { bandMin, bandMax } = await resolveBand(nations, config);
+  console.log(`[Instant] Scanning band [${bandMin} – ${bandMax}]`);
+
+  let sent = 0;
+  for (const nation of nations) {
+    const nationId = parseInt(nation.id);
+    if (nationId < bandMin || nationId > bandMax) continue;
+
+    if (await storage.hasMessagedNation(nationId)) continue;
+    const claimed = await storage.claimNation(nationId, nation.nation_name, nation.leader_name, "new_player");
+    if (!claimed) continue;
+
+    sent++;
+    console.log(`[Instant] Sending to ${nation.nation_name} (${nationId})...`);
+    const result = await sendMessage(nationId, nation.nation_name, nation.leader_name,
+      { apiKey: config.apiKey, subject: config.subject, messageTemplate: config.messageTemplate });
+    await storage.upsertLog({
+      nationId, nationName: nation.nation_name, leaderName: nation.leader_name,
+      status: result.success ? "success" : "failed",
+      error: result.success ? null : result.error,
+      messageType: "new_player",
+    });
+    if (result.success) console.log(`[Instant] Sent to ${nation.nation_name}`);
+    else console.error(`[Instant] Failed to send to ${nation.nation_name}: ${result.error}`);
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  console.log(`[Instant] Done. Sent ${sent} message(s).`);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// MODE B — Timed new-nation scan
+// Step 1: Add band nations to tracking table (don't message yet)
+// Step 2: Each cycle, check last_active of tracked nations via targeted query
+//         When a nation goes offline (last_active > 10 min) and then returns
+//         online, send the message immediately so it is first in their inbox.
+// ════════════════════════════════════════════════════════════════════════════
+async function runTimedNewNationScan(config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>) {
+  // ── Step 1: discover new nations in band and add to tracking ────────────
+  console.log("[Timed] Fetching recent nations...");
+  const nations = await fetchNationsFromGraphQL(NEW_NATIONS_QUERY, config.apiKey);
+  if (!nations) return;
+
+  const { bandMin, bandMax } = await resolveBand(nations, config);
+  console.log(`[Timed] Scanning band [${bandMin} – ${bandMax}] for new nations to track`);
 
   for (const nation of nations) {
     const nationId = parseInt(nation.id);
     if (nationId < bandMin || nationId > bandMax) continue;
 
-    const alreadyClaimed = await storage.hasMessagedNation(nationId);
-    if (alreadyClaimed) {
-      console.log(`[New] Nation ${nationId} (${nation.nation_name}) already claimed/messaged. Skipping.`);
-      continue;
+    // Skip if already messaged by any campaign
+    if (await storage.hasMessagedNation(nationId)) continue;
+
+    const added = await storage.addTrackedNation(nationId, nation.nation_name, nation.leader_name);
+    if (added) {
+      console.log(`[Timed] Now tracking ${nation.nation_name} (${nationId}) — waiting for offline→online cycle`);
     }
-
-    const claimed = await storage.claimNation(nationId, nation.nation_name, nation.leader_name, "new_player");
-    if (!claimed) {
-      console.log(`[New] Nation ${nationId} (${nation.nation_name}) claimed by another process. Skipping.`);
-      continue;
-    }
-
-    newCount++;
-    console.log(`[New] Sending to ${nation.nation_name} (${nationId}, founded ${nation.date})...`);
-
-    const result = await sendMessage(
-      nationId, nation.nation_name, nation.leader_name,
-      { apiKey: config.apiKey, subject: config.subject, messageTemplate: config.messageTemplate }
-    );
-
-    await storage.upsertLog({
-      nationId,
-      nationName: nation.nation_name,
-      leaderName: nation.leader_name,
-      status: result.success ? "success" : "failed",
-      error: result.success ? null : result.error,
-      messageType: "new_player",
-    });
-
-    if (result.success) {
-      console.log(`[New] Successfully messaged ${nation.nation_name}`);
-    } else {
-      console.error(`[New] Failed to message ${nation.nation_name}: ${result.error}`);
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 1000));
   }
 
-  console.log(`[New] Scan complete. Messaged ${newCount} new nation(s).`);
-}
-
-// ── Existing-player scan ─────────────────────────────────────────────────────
-// Criteria: unaligned (alliance_id = 0), more than 15 cities, not in vacation
-// mode (vacation_mode_turns = 0), and active within the last 7 days.
-async function runExistingPlayerScan(config: Awaited<ReturnType<typeof storage.getConfig>>) {
-  if (!config) return;
-  if (!config.existingPlayerSubject || !config.existingPlayerMessageTemplate) {
-    console.log("[Existing] No existing-player template configured. Skipping.");
+  // ── Step 2: check activity of all currently-watched nations ─────────────
+  const watching = await storage.getTrackedWatchingNations();
+  if (watching.length === 0) {
+    console.log("[Timed] No nations currently being tracked.");
     return;
   }
 
-  // ── PHASE 1: Retry previously failed existing-player nations ──────────────
-  const failedNations = await storage.getFailedNations();
-  if (failedNations.length > 0) {
-    const existingFailed = failedNations.filter(n => n.messageType === "existing_player");
-    if (existingFailed.length > 0) {
-      console.log(`[Existing] Retrying ${existingFailed.length} previously failed nation(s)...`);
-      for (const failed of existingFailed) {
-        console.log(`[Existing] Retrying ${failed.nationId} (${failed.nationName})...`);
-        const result = await sendMessage(
-          failed.nationId, failed.nationName, failed.leaderName ?? "",
-          {
-            apiKey: config.apiKey,
-            subject: config.existingPlayerSubject,
-            messageTemplate: config.existingPlayerMessageTemplate,
-          }
-        );
-        await storage.upsertLog({
-          nationId: failed.nationId,
-          nationName: failed.nationName,
-          leaderName: failed.leaderName ?? "",
-          status: result.success ? "success" : "failed",
-          error: result.success ? null : result.error,
-          messageType: "existing_player",
-        });
-        if (result.success) {
-          console.log(`[Existing] Retry successful: ${failed.nationName}`);
+  console.log(`[Timed] Checking activity for ${watching.length} tracked nation(s)...`);
+  const ids = watching.map(n => n.nationId);
+  const activityData = await fetchNationsFromGraphQL(buildActivityQuery(ids), config.apiKey);
+  if (!activityData) {
+    console.log("[Timed] Could not fetch activity data this cycle.");
+    return;
+  }
+
+  // Build a lookup map for fast access
+  const activityMap = new Map<number, any>();
+  for (const n of activityData) activityMap.set(parseInt(n.id), n);
+
+  const now = new Date();
+
+  for (const tracked of watching) {
+    // Expire after 6 hours — send as fallback so nation isn't missed
+    const age = now.getTime() - new Date(tracked.firstSeenAt).getTime();
+    if (age > TRACKING_EXPIRY_MS) {
+      console.log(`[Timed] ${tracked.nationName} (${tracked.nationId}) expired after 6h — sending as fallback`);
+      await sendTimedMessage(tracked.nationId, tracked.nationName, tracked.leaderName ?? "", config, "expired");
+      continue;
+    }
+
+    const apiNation = activityMap.get(tracked.nationId);
+    if (!apiNation || !apiNation.last_active) {
+      // Nation not found in API (possibly deleted) — skip
+      continue;
+    }
+
+    const lastActive = new Date(apiNation.last_active);
+    const isOnline = (now.getTime() - lastActive.getTime()) < ONLINE_THRESHOLD_MS;
+
+    if (!isOnline) {
+      // Nation is offline
+      if (!tracked.wentOfflineAt) {
+        // First time we detect them offline — record it
+        await storage.updateTrackedNationActivity(tracked.nationId, lastActive, now);
+        console.log(`[Timed] ${tracked.nationName} (${tracked.nationId}) went offline — waiting for return`);
+      } else {
+        // Still offline — just update last_active snapshot
+        await storage.updateTrackedNationActivity(tracked.nationId, lastActive, new Date(tracked.wentOfflineAt));
+      }
+    } else {
+      // Nation is online
+      if (tracked.wentOfflineAt) {
+        const offlineDuration = now.getTime() - new Date(tracked.wentOfflineAt).getTime();
+        if (offlineDuration >= MIN_OFFLINE_MS) {
+          // Was offline ≥ 5 min and is now back → SEND immediately
+          console.log(`[Timed] ${tracked.nationName} (${tracked.nationId}) returned online after ${Math.round(offlineDuration / 60000)}m offline — SENDING`);
+          await sendTimedMessage(tracked.nationId, tracked.nationName, tracked.leaderName ?? "", config, "sent");
         } else {
-          console.error(`[Existing] Retry failed for ${failed.nationName}: ${result.error}`);
+          // Offline window too short — might just be a brief connection blip
+          console.log(`[Timed] ${tracked.nationName} back online but offline duration only ${Math.round(offlineDuration / 60000)}m — waiting longer`);
+          await storage.updateTrackedNationActivity(tracked.nationId, lastActive, new Date(tracked.wentOfflineAt));
         }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      } else {
+        // Still online since we started tracking — update snapshot
+        await storage.updateTrackedNationActivity(tracked.nationId, lastActive, null);
       }
     }
   }
+}
 
-  // ── PHASE 2: Fetch unaligned nations from P&W ─────────────────────────────
-  console.log("[Existing] Fetching unaligned nations from P&W...");
+// Helper: claim + send + log for timed mode
+async function sendTimedMessage(
+  nationId: number,
+  nationName: string,
+  leaderName: string,
+  config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>,
+  trackingStatus: 'sent' | 'expired'
+) {
+  // Double-check dedup before sending
+  if (await storage.hasMessagedNation(nationId)) {
+    console.log(`[Timed] ${nationName} already messaged — skipping`);
+    await storage.markTrackedNationDone(nationId, trackingStatus);
+    return;
+  }
+
+  const claimed = await storage.claimNation(nationId, nationName, leaderName, "new_player");
+  if (!claimed) {
+    console.log(`[Timed] ${nationName} claimed by another process — skipping`);
+    await storage.markTrackedNationDone(nationId, trackingStatus);
+    return;
+  }
+
+  const result = await sendMessage(nationId, nationName, leaderName,
+    { apiKey: config.apiKey, subject: config.subject, messageTemplate: config.messageTemplate });
+
+  await storage.upsertLog({
+    nationId, nationName, leaderName,
+    status: result.success ? "success" : "failed",
+    error: result.success ? null : result.error,
+    messageType: "new_player",
+  });
+
+  // On failure keep status 'watching' so the next cycle retries via messagedNations retry queue
+  if (result.success) {
+    await storage.markTrackedNationDone(nationId, trackingStatus);
+  }
+
+  if (result.success) console.log(`[Timed] Successfully sent to ${nationName}`);
+  else console.error(`[Timed] Failed to send to ${nationName}: ${result.error}`);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Existing-player scan (unchanged)
+// ════════════════════════════════════════════════════════════════════════════
+async function runExistingPlayerScan(config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>) {
+  if (!config.existingPlayerSubject || !config.existingPlayerMessageTemplate) {
+    console.log("[Existing] No template configured. Skipping.");
+    return;
+  }
+
+  // Retry failed existing-player sends
+  const failed = await storage.getFailedNations();
+  const existingFailed = failed.filter(n => n.messageType === "existing_player");
+  for (const f of existingFailed) {
+    console.log(`[Existing] Retrying ${f.nationId} (${f.nationName})...`);
+    const result = await sendMessage(f.nationId, f.nationName, f.leaderName ?? "",
+      { apiKey: config.apiKey, subject: config.existingPlayerSubject, messageTemplate: config.existingPlayerMessageTemplate });
+    await storage.upsertLog({
+      nationId: f.nationId, nationName: f.nationName, leaderName: f.leaderName ?? "",
+      status: result.success ? "success" : "failed",
+      error: result.success ? null : result.error,
+      messageType: "existing_player",
+    });
+    console.log(result.success ? `[Existing] Retry OK: ${f.nationName}` : `[Existing] Retry failed: ${f.nationName}: ${result.error}`);
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  console.log("[Existing] Fetching unaligned nations...");
   const nations = await fetchNationsFromGraphQL(EXISTING_PLAYER_QUERY, config.apiKey);
   if (!nations) return;
 
-  // ── PHASE 3: Apply client-side filters ────────────────────────────────────
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-
   const eligible = nations.filter((n: any) => {
     const cities = parseInt(n.num_cities) || 0;
     const vacationTurns = parseInt(n.vacation_mode_turns) || 0;
     const lastActive = n.last_active ? new Date(n.last_active) : null;
     const allianceId = parseInt(n.alliance_id) || 0;
-
-    return (
-      allianceId === 0 &&               // must be unaligned
-      cities > 15 &&                    // must have more than 15 cities
-      vacationTurns === 0 &&            // must not be in vacation mode
-      lastActive !== null &&
-      lastActive >= sevenDaysAgo        // must have been active within 7 days
-    );
+    return allianceId === 0 && cities > 15 && vacationTurns === 0 && lastActive !== null && lastActive >= sevenDaysAgo;
   });
 
-  console.log(
-    `[Existing] ${eligible.length} eligible nation(s) after filtering ` +
-    `(from ${nations.length} unaligned fetched).`
-  );
+  console.log(`[Existing] ${eligible.length} eligible nation(s) after filtering.`);
 
-  // ── PHASE 4: Message eligible nations not already in logs ─────────────────
-  let sentCount = 0;
-
+  let sent = 0;
   for (const nation of eligible) {
     const nationId = parseInt(nation.id);
-
-    const alreadyClaimed = await storage.hasMessagedNation(nationId);
-    if (alreadyClaimed) {
-      console.log(`[Existing] Nation ${nationId} (${nation.nation_name}) already messaged. Skipping.`);
-      continue;
-    }
-
-    // Atomic claim — UNIQUE on nationId means if new-player bot already messaged
-    // this nation, this INSERT fails and we skip it correctly.
+    if (await storage.hasMessagedNation(nationId)) continue;
     const claimed = await storage.claimNation(nationId, nation.nation_name, nation.leader_name, "existing_player");
-    if (!claimed) {
-      console.log(`[Existing] Nation ${nationId} (${nation.nation_name}) claimed by another process. Skipping.`);
-      continue;
-    }
+    if (!claimed) continue;
 
-    sentCount++;
+    sent++;
     console.log(`[Existing] Sending to ${nation.nation_name} (${nationId}, cities: ${nation.num_cities})...`);
-
-    const result = await sendMessage(
-      nationId, nation.nation_name, nation.leader_name,
-      {
-        apiKey: config.apiKey,
-        subject: config.existingPlayerSubject,
-        messageTemplate: config.existingPlayerMessageTemplate,
-      }
-    );
-
+    const result = await sendMessage(nationId, nation.nation_name, nation.leader_name,
+      { apiKey: config.apiKey, subject: config.existingPlayerSubject, messageTemplate: config.existingPlayerMessageTemplate });
     await storage.upsertLog({
-      nationId,
-      nationName: nation.nation_name,
-      leaderName: nation.leader_name,
+      nationId, nationName: nation.nation_name, leaderName: nation.leader_name,
       status: result.success ? "success" : "failed",
       error: result.success ? null : result.error,
       messageType: "existing_player",
     });
-
-    if (result.success) {
-      console.log(`[Existing] Successfully messaged ${nation.nation_name}`);
-    } else {
-      console.error(`[Existing] Failed to message ${nation.nation_name}: ${result.error}`);
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    if (result.success) console.log(`[Existing] Sent to ${nation.nation_name}`);
+    else console.error(`[Existing] Failed: ${nation.nation_name}: ${result.error}`);
+    await new Promise(r => setTimeout(r, 1000));
   }
-
-  console.log(`[Existing] Scan complete. Messaged ${sentCount} existing nation(s).`);
+  console.log(`[Existing] Done. Sent ${sent} message(s).`);
 }
 
-// ── Main bot cycle: runs both scanners in sequence ───────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// Main cycle — reads mode from DB each run
+// ════════════════════════════════════════════════════════════════════════════
 export async function runBotCycle() {
   if (cycleRunning) {
-    console.log("Cycle already running. Skipping this trigger to prevent duplicates.");
+    console.log("Cycle already running — skipping.");
     return;
   }
   cycleRunning = true;
@@ -386,16 +445,22 @@ export async function runBotCycle() {
 
   try {
     const config = await storage.getConfig();
-
     if (!config) { console.log("No config found. Skipping."); return; }
     if (!config.isActive) { console.log("Bot is inactive. Skipping."); return; }
     if (!config.apiKey) { console.log("No API key configured. Skipping."); return; }
 
     await storage.updateLastRun();
 
-    await runNewNationScan(config);
-    await runExistingPlayerScan(config);
+    const mode = config.newNationRecruitMode ?? "instant";
+    console.log(`New-nation mode: ${mode}`);
 
+    if (mode === "timed") {
+      await runTimedNewNationScan(config);
+    } else {
+      await runInstantNewNationScan(config);
+    }
+
+    await runExistingPlayerScan(config);
     console.log("Bot cycle complete.");
   } finally {
     cycleRunning = false;
@@ -405,7 +470,6 @@ export async function runBotCycle() {
 export function startBotService() {
   if (schedulerActive) return;
   schedulerActive = true;
-
   runBotCycle().then(() => scheduleNextRun());
   console.log("Bot service started. Interval is read from config each cycle.");
 }
