@@ -55,9 +55,9 @@ export default function Dashboard() {
         {/* Footer */}
         <footer className="pt-8 text-center text-sm text-muted-foreground opacity-50">
           <p>
-            System scans for new nations every 2 minutes when active.
+            System scans for new nations on the configured interval when active.
             <br />
-            Configured to avoid duplicate messages.
+            Each nation is only ever messaged once across all campaigns.
           </p>
         </footer>
       </div>

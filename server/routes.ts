@@ -14,9 +14,7 @@ export async function registerRoutes(
   // Config routes
   app.get(api.config.get.path, async (req, res) => {
     const config = await storage.getConfig();
-    if (!config) {
-      return res.status(404).json({ message: "Config not found" });
-    }
+    if (!config) return res.status(404).json({ message: "Config not found" });
     res.json(config);
   });
 
@@ -32,6 +30,12 @@ export async function registerRoutes(
     res.json(logs);
   });
 
+  // Tracked nations (timed mode) — returns currently-watching rows
+  app.get(api.trackedNations.list.path, async (req, res) => {
+    const tracked = await storage.getTrackedWatchingNations();
+    res.json(tracked);
+  });
+
   // Bot control routes
   app.post(api.bot.toggle.path, async (req, res) => {
     const { isActive } = req.body;
@@ -40,12 +44,11 @@ export async function registerRoutes(
   });
 
   app.post(api.bot.run.path, async (req, res) => {
-    // Run asynchronously, don't wait for full completion to respond
     runBotCycle().catch(console.error);
     res.json({ message: "Bot cycle triggered" });
   });
 
-  // Health check routes for UptimeRobot / Better Stack
+  // Health check routes
   app.get("/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
@@ -54,17 +57,15 @@ export async function registerRoutes(
     res.json({ status: "online", bot: "running", timestamp: new Date().toISOString() });
   });
 
-  // Start the background bot service
   startBotService();
 
-  // Self-ping every 4 minutes to keep the container alive.
-  // Uses the public Replit domain so the ping registers as real external traffic,
-  // which prevents the container from going to sleep.
+  // Self-ping every 4 minutes to keep container + DB alive
   const replitDomain = process.env.REPLIT_DOMAINS?.split(",")[0];
   const pingUrl = replitDomain
     ? `https://${replitDomain}/api/health`
     : `http://localhost:${process.env.PORT || 5000}/api/health`;
-  console.log(`Bot is running. Keep-alive ping target: ${pingUrl}`);
+  console.log(`Bot running. Keep-alive ping target: ${pingUrl}`);
+
   setInterval(async () => {
     try {
       await axios.get(pingUrl);
@@ -72,8 +73,6 @@ export async function registerRoutes(
     } catch (err) {
       console.warn("Self-ping failed:", (err as Error).message);
     }
-    // Also run a lightweight DB query to keep the Neon connection endpoint
-    // from auto-suspending, which would block the Replit publish diff-check.
     try {
       await pool.query("SELECT 1");
     } catch (err) {

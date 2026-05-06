@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { insertBotConfigSchema, botConfig, messagedNations, updateConfigSchema } from "./schema";
+import { insertBotConfigSchema, botConfig, messagedNations, trackedNewNations, updateConfigSchema } from "./schema";
 
-export type { BotConfig, UpdateConfigRequest, MessagedNation } from "./schema";
+export type { BotConfig, UpdateConfigRequest, MessagedNation, TrackedNewNation } from "./schema";
 
 export const api = {
   config: {
@@ -31,6 +31,15 @@ export const api = {
       },
     },
   },
+  trackedNations: {
+    list: {
+      method: "GET" as const,
+      path: "/api/tracked-nations" as const,
+      responses: {
+        200: z.array(z.custom<typeof trackedNewNations.$inferSelect>()),
+      },
+    },
+  },
   bot: {
     toggle: {
       method: "POST" as const,
@@ -42,7 +51,7 @@ export const api = {
     },
     run: {
       method: "POST" as const,
-      path: "/api/bot/run" as const, // Manual trigger
+      path: "/api/bot/run" as const,
       responses: {
         200: z.object({ message: z.string() }),
       },

@@ -17,9 +17,7 @@ const ssl = connectionString.includes("sslmode=require")
 export const pool = new Pool({ connectionString, ssl });
 export const db = drizzle(pool, { schema });
 
-// Automatically create / update the schema on every startup.
-// Uses IF NOT EXISTS / ADD COLUMN IF NOT EXISTS so it is fully idempotent —
-// safe to run against both fresh and existing databases.
+// Idempotent migrations — safe on both fresh and existing databases.
 export async function runMigrations(): Promise<void> {
   const client = await pool.connect();
   try {
@@ -35,13 +33,15 @@ export async function runMigrations(): Promise<void> {
         last_run_at                      TIMESTAMP,
         last_nation_id                   INTEGER,
         scan_interval                    INTEGER NOT NULL DEFAULT 120,
-        new_nation_recruit_mode          TEXT NOT NULL DEFAULT 'instant'
+        new_nation_recruit_mode          TEXT NOT NULL DEFAULT 'instant',
+        timed_mode_offline_minutes       INTEGER NOT NULL DEFAULT 5
       );
 
       ALTER TABLE bot_config
         ADD COLUMN IF NOT EXISTS existing_player_subject          TEXT NOT NULL DEFAULT '',
         ADD COLUMN IF NOT EXISTS existing_player_message_template TEXT NOT NULL DEFAULT '',
-        ADD COLUMN IF NOT EXISTS new_nation_recruit_mode          TEXT NOT NULL DEFAULT 'instant';
+        ADD COLUMN IF NOT EXISTS new_nation_recruit_mode          TEXT NOT NULL DEFAULT 'instant',
+        ADD COLUMN IF NOT EXISTS timed_mode_offline_minutes       INTEGER NOT NULL DEFAULT 5;
 
       CREATE TABLE IF NOT EXISTS messaged_nations (
         id           SERIAL PRIMARY KEY,

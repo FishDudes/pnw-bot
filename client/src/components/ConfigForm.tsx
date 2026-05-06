@@ -7,12 +7,14 @@ import { useEffect } from "react";
 import { Settings, Save, Lock, MessageSquare, FileText, Timer, Users, UserCheck, Zap, Clock } from "lucide-react";
 
 const formSchema = updateConfigSchema.extend({
-  scanInterval: z.number().min(60).max(180).default(120),
+  scanInterval: z.number().min(30).max(180).default(120),
+  timedModeOfflineMinutes: z.number().min(1).max(30).default(5),
 });
 
 type ConfigFormValues = z.infer<typeof formSchema>;
 
 function formatSeconds(s: number): string {
+  if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   const sec = s % 60;
   if (sec === 0) return `${m}m`;
@@ -33,12 +35,18 @@ export function ConfigForm() {
       existingPlayerMessageTemplate: "",
       scanInterval: 120,
       newNationRecruitMode: "instant",
+      timedModeOfflineMinutes: 5,
     },
   });
 
   const scanInterval = form.watch("scanInterval") ?? 120;
   const recruitMode = form.watch("newNationRecruitMode") ?? "instant";
-  const sliderPct = ((scanInterval - 60) / 120) * 100;
+  const offlineMinutes = form.watch("timedModeOfflineMinutes") ?? 5;
+
+  // scan interval slider: 30s–180s range
+  const sliderPct = ((scanInterval - 30) / (180 - 30)) * 100;
+  // offline minutes slider: 1–30 min range
+  const offlinePct = ((offlineMinutes - 1) / (30 - 1)) * 100;
 
   useEffect(() => {
     if (config) {
@@ -50,6 +58,7 @@ export function ConfigForm() {
         existingPlayerMessageTemplate: config.existingPlayerMessageTemplate ?? "",
         scanInterval: config.scanInterval ?? 120,
         newNationRecruitMode: config.newNationRecruitMode ?? "instant",
+        timedModeOfflineMinutes: config.timedModeOfflineMinutes ?? 5,
       });
     }
   }, [config, form]);
@@ -143,11 +152,48 @@ export function ConfigForm() {
             </div>
             <p className="text-xs text-muted-foreground">
               {recruitMode === "timed"
-                ? "Tracks new nations and sends the moment they return online after going offline for ≥5 min — message appears first in their inbox."
+                ? "Tracks new nations and sends the moment they return online after going offline — message appears first in their inbox."
                 : "Messages new nations immediately when they appear in the scan band."}
             </p>
             <input type="hidden" {...form.register("newNationRecruitMode")} />
           </div>
+
+          {/* Offline wait time slider — only shown in Timed mode */}
+          {recruitMode === "timed" && (
+            <div className="space-y-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-amber-300/80 flex items-center gap-1.5">
+                  <Clock className="w-3 h-3" /> Min. Offline Time Before Send
+                </label>
+                <span
+                  data-testid="text-offline-minutes"
+                  className="text-xs font-semibold text-amber-300 tabular-nums"
+                >
+                  {offlineMinutes}m
+                </span>
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={30}
+                step={1}
+                data-testid="slider-offline-minutes"
+                className="w-full h-2 rounded-full appearance-none cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, hsl(38 92% 50%) 0%, hsl(38 92% 50%) ${offlinePct}%, hsl(var(--muted)) ${offlinePct}%, hsl(var(--muted)) 100%)`,
+                }}
+                {...form.register("timedModeOfflineMinutes", { valueAsNumber: true })}
+              />
+              <div className="flex justify-between">
+                <span className="text-xs text-muted-foreground">1m</span>
+                <span className="text-xs text-muted-foreground">15m</span>
+                <span className="text-xs text-muted-foreground">30m</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Nation must be offline this long before returning online triggers the message. Match to how long P&W shows a player as inactive.
+              </p>
+            </div>
+          )}
 
           <div className="space-y-2">
             <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
@@ -221,7 +267,7 @@ export function ConfigForm() {
           </p>
         </div>
 
-        {/* Scan Interval Slider */}
+        {/* Scan Interval Slider — 30s to 3m */}
         <div className="space-y-3 pt-1">
           <div className="flex items-center justify-between">
             <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
@@ -234,7 +280,7 @@ export function ConfigForm() {
           <div className="px-1">
             <input
               type="range"
-              min={60}
+              min={30}
               max={180}
               step={1}
               data-testid="slider-scan-interval"
@@ -245,10 +291,10 @@ export function ConfigForm() {
               {...form.register("scanInterval", { valueAsNumber: true })}
             />
             <div className="flex justify-between mt-1.5">
+              <span className="text-xs text-muted-foreground">30s</span>
               <span className="text-xs text-muted-foreground">1m</span>
               <span className="text-xs text-muted-foreground">1m 30s</span>
               <span className="text-xs text-muted-foreground">2m</span>
-              <span className="text-xs text-muted-foreground">2m 30s</span>
               <span className="text-xs text-muted-foreground">3m</span>
             </div>
           </div>
