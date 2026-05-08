@@ -49,6 +49,41 @@ export function useUpdateConfig() {
   });
 }
 
+// Import configuration from a saved file
+export function useImportConfig() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (data: Record<string, unknown>) => {
+      const res = await fetch(api.config.import.path, {
+        method: api.config.import.method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).message ?? "Failed to import configuration");
+      }
+      return api.config.import.responses[200].parse(await res.json());
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData([api.config.get.path], data);
+      toast({
+        title: "Configuration Imported",
+        description: "All settings have been restored from the save file.",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Import Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+}
+
 // Fetch sent/failed message logs
 export function useLogs() {
   return useQuery({
@@ -62,7 +97,7 @@ export function useLogs() {
   });
 }
 
-// Fetch nations currently being tracked in timed mode
+// Fetch nations currently being watched in timed mode (status = watching)
 export function useTrackedNations() {
   return useQuery({
     queryKey: [api.trackedNations.list.path],
@@ -70,6 +105,19 @@ export function useTrackedNations() {
       const res = await fetch(api.trackedNations.list.path);
       if (!res.ok) throw new Error("Failed to fetch tracked nations");
       return api.trackedNations.list.responses[200].parse(await res.json()) as TrackedNewNation[];
+    },
+    refetchInterval: 10000,
+  });
+}
+
+// Fetch ALL tracked nations including sent/expired — for the Tracking history tab
+export function useAllTrackedNations() {
+  return useQuery({
+    queryKey: [api.trackedNations.all.path],
+    queryFn: async () => {
+      const res = await fetch(api.trackedNations.all.path);
+      if (!res.ok) throw new Error("Failed to fetch tracked nations history");
+      return api.trackedNations.all.responses[200].parse(await res.json()) as TrackedNewNation[];
     },
     refetchInterval: 10000,
   });

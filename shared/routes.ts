@@ -21,6 +21,13 @@ export const api = {
         200: z.custom<typeof botConfig.$inferSelect>(),
       },
     },
+    import: {
+      method: "POST" as const,
+      path: "/api/config/import" as const,
+      responses: {
+        200: z.custom<typeof botConfig.$inferSelect>(),
+      },
+    },
   },
   logs: {
     list: {
@@ -35,6 +42,13 @@ export const api = {
     list: {
       method: "GET" as const,
       path: "/api/tracked-nations" as const,
+      responses: {
+        200: z.array(z.custom<typeof trackedNewNations.$inferSelect>()),
+      },
+    },
+    all: {
+      method: "GET" as const,
+      path: "/api/tracked-nations/all" as const,
       responses: {
         200: z.array(z.custom<typeof trackedNewNations.$inferSelect>()),
       },

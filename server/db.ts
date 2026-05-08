@@ -76,6 +76,9 @@ export async function runMigrations(): Promise<void> {
 
       CREATE UNIQUE INDEX IF NOT EXISTS uq_tracked_new_nations_nation_id
         ON tracked_new_nations (nation_id);
+
+      ALTER TABLE tracked_new_nations
+        ADD COLUMN IF NOT EXISTS messaged_at TIMESTAMP;
     `);
     console.log("Database migrations applied successfully.");
   } finally {

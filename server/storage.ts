@@ -23,8 +23,9 @@ export interface IStorage {
   // Timed-mode tracking
   addTrackedNation(nationId: number, nationName: string, leaderName: string): Promise<boolean>;
   getTrackedWatchingNations(): Promise<TrackedNewNation[]>;
+  getAllTrackedNations(): Promise<TrackedNewNation[]>;
   updateTrackedNationActivity(nationId: number, lastActiveAt: Date, wentOfflineAt: Date | null): Promise<void>;
-  markTrackedNationDone(nationId: number, status: 'sent' | 'expired'): Promise<void>;
+  markTrackedNationDone(nationId: number, status: 'sent' | 'expired', messagedAt?: Date): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -94,7 +95,7 @@ export class DatabaseStorage implements IStorage {
     return await db.select()
       .from(messagedNations)
       .orderBy(desc(messagedNations.messagedAt))
-      .limit(100);
+      .limit(200);
   }
 
   async claimNation(nationId: number, nationName: string, leaderName: string, messageType: string = "new_player"): Promise<boolean> {
@@ -155,7 +156,6 @@ export class DatabaseStorage implements IStorage {
 
   // ── Timed-mode tracking ──────────────────────────────────────────────────
 
-  // Insert a new tracked nation. Returns true if inserted (new), false if already tracked.
   async addTrackedNation(nationId: number, nationName: string, leaderName: string): Promise<boolean> {
     const rows = await db.insert(trackedNewNations)
       .values({ nationId, nationName, leaderName, status: "watching" })
@@ -167,10 +167,18 @@ export class DatabaseStorage implements IStorage {
   async getTrackedWatchingNations(): Promise<TrackedNewNation[]> {
     return await db.select()
       .from(trackedNewNations)
-      .where(eq(trackedNewNations.status, "watching"));
+      .where(eq(trackedNewNations.status, "watching"))
+      .orderBy(desc(trackedNewNations.firstSeenAt));
   }
 
-  // Update activity snapshot. Pass wentOfflineAt=null to clear it (back online without triggering send).
+  // Returns ALL tracked nations (watching + sent + expired) for audit/history view
+  async getAllTrackedNations(): Promise<TrackedNewNation[]> {
+    return await db.select()
+      .from(trackedNewNations)
+      .orderBy(desc(trackedNewNations.firstSeenAt))
+      .limit(200);
+  }
+
   async updateTrackedNationActivity(
     nationId: number,
     lastActiveAt: Date,
@@ -181,9 +189,9 @@ export class DatabaseStorage implements IStorage {
       .where(eq(trackedNewNations.nationId, nationId));
   }
 
-  async markTrackedNationDone(nationId: number, status: 'sent' | 'expired'): Promise<void> {
+  async markTrackedNationDone(nationId: number, status: 'sent' | 'expired', messagedAt?: Date): Promise<void> {
     await db.update(trackedNewNations)
-      .set({ status })
+      .set({ status, messagedAt: messagedAt ?? null })
       .where(eq(trackedNewNations.nationId, nationId));
   }
 }

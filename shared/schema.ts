@@ -48,6 +48,8 @@ export const trackedNewNations = pgTable("tracked_new_nations", {
   lastActiveAt: timestamp("last_active_at"),
   wentOfflineAt: timestamp("went_offline_at"),
   status: text("status").notNull().default("watching"),
+  // Set when the recruitment message is actually sent
+  messagedAt: timestamp("messaged_at"),
 }, (table) => [
   unique("uq_tracked_new_nations_nation_id").on(table.nationId),
 ]);

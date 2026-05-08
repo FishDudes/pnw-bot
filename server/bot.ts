@@ -60,8 +60,8 @@ const BAND_BELOW          = 20;
 const BAND_ABOVE          = 10;
 // A nation's last_active being older than this → considered offline/inactive
 const ACTIVE_THRESHOLD_MS = 10 * 60 * 1000;        // 10 minutes
-// After 10 days with no login detected, send as fallback regardless
-const TRACKING_EXPIRY_MS  = 10 * 24 * 60 * 60 * 1000; // 10 days
+// After 2 days with no login detected, send as fallback regardless
+const TRACKING_EXPIRY_MS  = 2 * 24 * 60 * 60 * 1000; // 2 days
 // Catch nations that became unaligned within the last 24h
 const RECENTLY_UNALIGNED_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -401,7 +401,7 @@ async function sendTimedMessage(
   });
 
   if (result.success) {
-    await storage.markTrackedNationDone(nationId, trackingStatus);
+    await storage.markTrackedNationDone(nationId, trackingStatus, new Date());
     console.log(`[Timed] Successfully sent to ${nationName}`);
   } else {
     console.error(`[Timed] Failed to send to ${nationName}: ${result.error}`);

@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
+import { updateConfigSchema } from "@shared/schema";
 import { startBotService, runBotCycle } from "./bot";
 import { pool } from "./db";
 import axios from "axios";
@@ -24,15 +25,34 @@ export async function registerRoutes(
     res.json(config);
   });
 
+  // Import config from a saved export file
+  app.post(api.config.import.path, async (req, res) => {
+    try {
+      // Strip export-only metadata fields before validating
+      const { _exported, _version, ...rest } = req.body;
+      const input = updateConfigSchema.parse(rest);
+      const config = await storage.updateConfig(input);
+      res.json(config);
+    } catch (err: any) {
+      res.status(400).json({ message: err?.message ?? "Invalid import file" });
+    }
+  });
+
   // Logs routes
   app.get(api.logs.list.path, async (req, res) => {
     const logs = await storage.getLogs();
     res.json(logs);
   });
 
-  // Tracked nations (timed mode) — returns currently-watching rows
+  // Tracked nations — currently watching only (for live badge count + "All" view)
   app.get(api.trackedNations.list.path, async (req, res) => {
     const tracked = await storage.getTrackedWatchingNations();
+    res.json(tracked);
+  });
+
+  // All tracked nations — full history including sent/expired (for Tracking tab audit)
+  app.get(api.trackedNations.all.path, async (req, res) => {
+    const tracked = await storage.getAllTrackedNations();
     res.json(tracked);
   });
 

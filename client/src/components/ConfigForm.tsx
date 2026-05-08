@@ -2,13 +2,17 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { updateConfigSchema } from "@shared/schema";
-import { useConfig, useUpdateConfig } from "@/hooks/use-bot";
-import { useEffect } from "react";
-import { Settings, Save, Lock, MessageSquare, FileText, Timer, Users, UserCheck, Zap, Clock } from "lucide-react";
+import { useConfig, useUpdateConfig, useImportConfig } from "@/hooks/use-bot";
+import { useEffect, useRef } from "react";
+import { format } from "date-fns";
+import {
+  Settings, Save, Lock, MessageSquare, FileText, Timer,
+  Users, UserCheck, Zap, Clock, Download, Upload,
+} from "lucide-react";
 
 const formSchema = updateConfigSchema.extend({
-  scanInterval: z.number().min(30).max(180).default(120),
-  timedModeOfflineMinutes: z.number().min(1).max(30).default(5),
+  scanInterval:            z.number().min(30).max(180).default(120),
+  timedModeOfflineMinutes: z.number().min(15).max(180).default(15),
 });
 
 type ConfigFormValues = z.infer<typeof formSchema>;
@@ -21,44 +25,55 @@ function formatSeconds(s: number): string {
   return `${m}m ${sec}s`;
 }
 
+function formatMinutes(m: number): string {
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  if (rem === 0) return `${h}h`;
+  return `${h}h ${rem}m`;
+}
+
 export function ConfigForm() {
   const { data: config, isLoading } = useConfig();
   const updateConfig = useUpdateConfig();
+  const importConfig = useImportConfig();
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const form = useForm<ConfigFormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      apiKey: "",
-      subject: "",
-      messageTemplate: "",
-      existingPlayerSubject: "",
-      existingPlayerMessageTemplate: "",
-      scanInterval: 120,
-      newNationRecruitMode: "instant",
-      timedModeOfflineMinutes: 5,
+      apiKey:                          "",
+      subject:                         "",
+      messageTemplate:                 "",
+      existingPlayerSubject:           "",
+      existingPlayerMessageTemplate:   "",
+      scanInterval:                    120,
+      newNationRecruitMode:            "instant",
+      timedModeOfflineMinutes:         15,
     },
   });
 
-  const scanInterval = form.watch("scanInterval") ?? 120;
-  const recruitMode = form.watch("newNationRecruitMode") ?? "instant";
-  const offlineMinutes = form.watch("timedModeOfflineMinutes") ?? 5;
+  const scanInterval   = form.watch("scanInterval")            ?? 120;
+  const recruitMode    = form.watch("newNationRecruitMode")    ?? "instant";
+  const offlineMinutes = form.watch("timedModeOfflineMinutes") ?? 15;
 
-  // scan interval slider: 30s–180s range
-  const sliderPct = ((scanInterval - 30) / (180 - 30)) * 100;
-  // offline minutes slider: 1–30 min range
-  const offlinePct = ((offlineMinutes - 1) / (30 - 1)) * 100;
+  // Scan interval slider: 30–180s
+  const sliderPct  = ((scanInterval   - 30) / (180 - 30))  * 100;
+  // Offline minutes slider: 15–180 min
+  const offlinePct = ((offlineMinutes - 15) / (180 - 15)) * 100;
 
   useEffect(() => {
     if (config) {
       form.reset({
-        apiKey: config.apiKey,
-        subject: config.subject,
-        messageTemplate: config.messageTemplate,
-        existingPlayerSubject: config.existingPlayerSubject ?? "",
-        existingPlayerMessageTemplate: config.existingPlayerMessageTemplate ?? "",
-        scanInterval: config.scanInterval ?? 120,
-        newNationRecruitMode: config.newNationRecruitMode ?? "instant",
-        timedModeOfflineMinutes: config.timedModeOfflineMinutes ?? 5,
+        apiKey:                          config.apiKey,
+        subject:                         config.subject,
+        messageTemplate:                 config.messageTemplate,
+        existingPlayerSubject:           config.existingPlayerSubject   ?? "",
+        existingPlayerMessageTemplate:   config.existingPlayerMessageTemplate ?? "",
+        scanInterval:                    config.scanInterval            ?? 120,
+        newNationRecruitMode:            config.newNationRecruitMode    ?? "instant",
+        // Clamp stored value to new min of 15 so form stays valid
+        timedModeOfflineMinutes:         Math.max(15, config.timedModeOfflineMinutes ?? 15),
       });
     }
   }, [config, form]);
@@ -67,21 +82,106 @@ export function ConfigForm() {
     updateConfig.mutate(data);
   };
 
+  // ── Export ───────────────────────────────────────────────────────────────
+  function handleExport() {
+    if (!config) return;
+    const dateStr = format(new Date(), "yyyy-MM-dd");
+    const exportData = {
+      _version:  "1.0",
+      _exported: new Date().toISOString(),
+      apiKey:                          config.apiKey,
+      subject:                         config.subject,
+      messageTemplate:                 config.messageTemplate,
+      existingPlayerSubject:           config.existingPlayerSubject   ?? "",
+      existingPlayerMessageTemplate:   config.existingPlayerMessageTemplate ?? "",
+      scanInterval:                    config.scanInterval            ?? 120,
+      newNationRecruitMode:            config.newNationRecruitMode    ?? "instant",
+      timedModeOfflineMinutes:         config.timedModeOfflineMinutes ?? 15,
+      // System fields excluded: id, isActive, lastRunAt, lastNationId
+    };
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `Atlantis Recruitment Bot Save - ${dateStr}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ── Import ───────────────────────────────────────────────────────────────
+  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target?.result as string);
+        importConfig.mutate(data);
+      } catch {
+        alert("Could not read the file. Make sure it is a valid Atlantis Recruitment Bot save.");
+      }
+    };
+    reader.readAsText(file);
+    // Reset input so the same file can be re-imported
+    e.target.value = "";
+  }
+
   if (isLoading) {
     return (
       <div className="glass-card rounded-2xl p-6 h-full flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
       </div>
     );
   }
 
   return (
-    <div className="glass-card rounded-2xl p-6 h-full flex flex-col">
-      <div className="flex items-center gap-2 mb-6">
-        <div className="p-2 bg-primary/10 rounded-lg">
-          <Settings className="w-5 h-5 text-primary" />
+    <div className="glass-card rounded-2xl p-5 sm:p-6 h-full flex flex-col">
+      {/* Header + Export/Import */}
+      <div className="flex items-center justify-between gap-2 mb-6 flex-wrap">
+        <div className="flex items-center gap-2">
+          <div className="p-2 bg-primary/10 rounded-lg">
+            <Settings className="w-5 h-5 text-primary" />
+          </div>
+          <h2 className="text-xl font-bold">Bot Configuration</h2>
         </div>
-        <h2 className="text-xl font-bold">Bot Configuration</h2>
+
+        <div className="flex items-center gap-2">
+          {/* Import */}
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={handleImportFile}
+            data-testid="input-import-file"
+          />
+          <button
+            type="button"
+            disabled={importConfig.isPending}
+            onClick={() => importInputRef.current?.click()}
+            data-testid="button-import-config"
+            title="Import settings from a save file"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 bg-secondary/50 hover:bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-all disabled:opacity-50"
+          >
+            {importConfig.isPending
+              ? <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+              : <Upload className="w-3.5 h-3.5" />}
+            Import
+          </button>
+
+          {/* Export */}
+          <button
+            type="button"
+            disabled={!config}
+            onClick={handleExport}
+            data-testid="button-export-config"
+            title="Export settings to a save file"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 bg-secondary/50 hover:bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-all disabled:opacity-50"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Export
+          </button>
+        </div>
       </div>
 
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 flex-1 flex flex-col">
@@ -103,7 +203,7 @@ export function ConfigForm() {
           )}
         </div>
 
-        {/* ── New Player Template ─────────────────────────────────────────── */}
+        {/* ── New Player Template ──────────────────────────────────────────── */}
         <div className="space-y-4 rounded-xl border border-blue-500/20 bg-blue-500/5 p-4">
           <div className="flex items-center gap-2 flex-wrap">
             <Users className="w-4 h-4 text-blue-400" />
@@ -158,7 +258,7 @@ export function ConfigForm() {
             <input type="hidden" {...form.register("newNationRecruitMode")} />
           </div>
 
-          {/* Offline wait time slider — only shown in Timed mode */}
+          {/* Offline wait time slider — 15 min to 3 hours */}
           {recruitMode === "timed" && (
             <div className="space-y-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
               <div className="flex items-center justify-between">
@@ -169,13 +269,13 @@ export function ConfigForm() {
                   data-testid="text-offline-minutes"
                   className="text-xs font-semibold text-amber-300 tabular-nums"
                 >
-                  {offlineMinutes}m
+                  {formatMinutes(offlineMinutes)}
                 </span>
               </div>
               <input
                 type="range"
-                min={1}
-                max={30}
+                min={15}
+                max={180}
                 step={1}
                 data-testid="slider-offline-minutes"
                 className="w-full h-2 rounded-full appearance-none cursor-pointer"
@@ -185,12 +285,14 @@ export function ConfigForm() {
                 {...form.register("timedModeOfflineMinutes", { valueAsNumber: true })}
               />
               <div className="flex justify-between">
-                <span className="text-xs text-muted-foreground">1m</span>
                 <span className="text-xs text-muted-foreground">15m</span>
-                <span className="text-xs text-muted-foreground">30m</span>
+                <span className="text-xs text-muted-foreground">1h</span>
+                <span className="text-xs text-muted-foreground">1h 30m</span>
+                <span className="text-xs text-muted-foreground">2h</span>
+                <span className="text-xs text-muted-foreground">3h</span>
               </div>
               <p className="text-xs text-muted-foreground">
-                Nation must be offline this long before returning online triggers the message. Match to how long P&W shows a player as inactive.
+                Nation must be offline this long before returning online triggers the message. Nations tracked longer than 2 days receive the message automatically.
               </p>
             </div>
           )}
@@ -226,17 +328,17 @@ export function ConfigForm() {
           </div>
         </div>
 
-        {/* ── Existing Player Template ────────────────────────────────────── */}
+        {/* ── Existing Player Template ─────────────────────────────────────── */}
         <div className="space-y-4 rounded-xl border border-purple-500/20 bg-purple-500/5 p-4">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <UserCheck className="w-4 h-4 text-purple-400" />
             <span className="text-sm font-semibold text-purple-300">Existing Player Template</span>
             <span className="ml-auto text-xs text-muted-foreground bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-full">
-              Unaligned · 15+ cities · active 7d
+              Recently unaligned
             </span>
           </div>
           <p className="text-xs text-muted-foreground -mt-1">
-            Sent to established, unaligned nations with more than 15 cities who have logged in within the last 7 days and are not in vacation mode.
+            Sent to any unaligned nation active within the last 24 hours — catches players the moment they leave an alliance. Not in vacation mode. One message per nation.
           </p>
 
           <div className="space-y-2">
