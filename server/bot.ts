@@ -22,14 +22,16 @@ const NEW_NATIONS_QUERY = `
   }
 `;
 
+// Existing-player: unaligned nations ordered by most-recently-active first.
+// Catches nations that just left an alliance (they'll be near the top).
+// No city minimum — targets any player who just became unaligned.
 const EXISTING_PLAYER_QUERY = `
   query {
-    nations(first: 500, alliance_id: 0, orderBy: {column: DATE, order: DESC}) {
+    nations(first: 500, alliance_id: 0, orderBy: {column: LAST_ACTIVE, order: DESC}) {
       data {
         id
         nation_name
         leader_name
-        num_cities
         vacation_mode_turns
         last_active
         alliance_id
@@ -54,12 +56,17 @@ function buildActivityQuery(nationIds: number[]): string {
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const BAND_BELOW = 20;
-const BAND_ABOVE = 10;
-const ONLINE_THRESHOLD_MS = 10 * 60 * 1000; // last_active within 10 min = "online"
-const TRACKING_EXPIRY_MS  =  6 * 60 * 60 * 1000; // 6h max watch before fallback send
-const MIN_SCAN_INTERVAL_S = 30;  // 30 seconds minimum (matches new slider range)
-const MAX_SCAN_INTERVAL_S = 180; // 3 minutes maximum
+const BAND_BELOW          = 20;
+const BAND_ABOVE          = 10;
+// A nation's last_active being older than this → considered offline/inactive
+const ACTIVE_THRESHOLD_MS = 10 * 60 * 1000;        // 10 minutes
+// After 10 days with no login detected, send as fallback regardless
+const TRACKING_EXPIRY_MS  = 10 * 24 * 60 * 60 * 1000; // 10 days
+// Catch nations that became unaligned within the last 24h
+const RECENTLY_UNALIGNED_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+const MIN_SCAN_INTERVAL_S = 30;
+const MAX_SCAN_INTERVAL_S = 180;
 
 // ── Concurrency guard ────────────────────────────────────────────────────────
 let cycleRunning = false;
@@ -233,12 +240,14 @@ async function runInstantNewNationScan(
 
 // ════════════════════════════════════════════════════════════════════════════
 // MODE B — Timed new-nation scan
-// Tracks new nations; sends when they return online after ≥N min offline
+//
+// Core algorithm: detect a CHANGE in last_active (not just "is it recent?").
+// When the API reports a newer last_active than what we stored, the player
+// just logged in. Only then do we check the offline window and send.
 // ════════════════════════════════════════════════════════════════════════════
 async function runTimedNewNationScan(
   config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>
 ) {
-  // Read configurable offline threshold (default 5 min)
   const minOfflineMs = Math.max(1, config.timedModeOfflineMinutes ?? 5) * 60 * 1000;
 
   // ── Step 1: discover band nations and add to tracking ────────────────────
@@ -247,7 +256,7 @@ async function runTimedNewNationScan(
   if (!nations) return;
 
   const { bandMin, bandMax } = await resolveBand(nations, config);
-  console.log(`[Timed] Scanning band [${bandMin} – ${bandMax}] for new nations to track`);
+  console.log(`[Timed] Scanning band [${bandMin} – ${bandMax}]`);
 
   for (const nation of nations) {
     const nationId = parseInt(nation.id);
@@ -259,7 +268,7 @@ async function runTimedNewNationScan(
     }
   }
 
-  // ── Step 2: check activity of all watched nations ────────────────────────
+  // ── Step 2: check activity for all watched nations ───────────────────────
   const watching = await storage.getTrackedWatchingNations();
   if (watching.length === 0) {
     console.log("[Timed] No nations currently being tracked.");
@@ -280,44 +289,87 @@ async function runTimedNewNationScan(
   const now = new Date();
 
   for (const tracked of watching) {
-    // Expiry fallback after 6 hours
+    // ── 10-day expiry: send as fallback and clear from tracking ─────────────
     const age = now.getTime() - new Date(tracked.firstSeenAt).getTime();
     if (age > TRACKING_EXPIRY_MS) {
-      console.log(`[Timed] ${tracked.nationName} (${tracked.nationId}) expired after 6h — sending as fallback`);
+      console.log(`[Timed] ${tracked.nationName} (${tracked.nationId}) expired after 10 days — sending as fallback`);
       await sendTimedMessage(tracked.nationId, tracked.nationName, tracked.leaderName ?? "", config, "expired");
       continue;
     }
 
     const apiNation = activityMap.get(tracked.nationId);
-    if (!apiNation || !apiNation.last_active) continue;
+    if (!apiNation || !apiNation.last_active) {
+      // Nation not found in API (possibly deleted) — skip
+      continue;
+    }
 
-    const lastActive = new Date(apiNation.last_active);
-    const isOnline = (now.getTime() - lastActive.getTime()) < ONLINE_THRESHOLD_MS;
+    const currentLastActive = new Date(apiNation.last_active);
+    const prevLastActive    = tracked.lastActiveAt ? new Date(tracked.lastActiveAt) : null;
 
-    if (!isOnline) {
-      if (!tracked.wentOfflineAt) {
-        await storage.updateTrackedNationActivity(tracked.nationId, lastActive, now);
-        console.log(`[Timed] ${tracked.nationName} (${tracked.nationId}) went offline — waiting for return`);
+    // ── First-time activity check (never seen before) ────────────────────────
+    if (prevLastActive === null) {
+      // Store the initial last_active. If they're already offline, record it.
+      const isActive = (now.getTime() - currentLastActive.getTime()) < ACTIVE_THRESHOLD_MS;
+      if (isActive) {
+        // Online when first seen — wait for them to go offline first
+        await storage.updateTrackedNationActivity(tracked.nationId, currentLastActive, null);
+        console.log(`[Timed] ${tracked.nationName} (${tracked.nationId}) first check — online, waiting for offline`);
       } else {
-        await storage.updateTrackedNationActivity(tracked.nationId, lastActive, new Date(tracked.wentOfflineAt));
+        // Already offline when first seen
+        await storage.updateTrackedNationActivity(tracked.nationId, currentLastActive, now);
+        console.log(`[Timed] ${tracked.nationName} (${tracked.nationId}) first check — already offline, waiting for return`);
       }
-    } else {
+      continue;
+    }
+
+    // ── Detect login: last_active changed to a newer timestamp ──────────────
+    // This is the ONLY reliable signal that the player just logged in.
+    const loginDetected = currentLastActive.getTime() > prevLastActive.getTime();
+
+    if (loginDetected) {
+      console.log(`[Timed] ${tracked.nationName} (${tracked.nationId}) — new activity detected`);
+
       if (tracked.wentOfflineAt) {
         const offlineDuration = now.getTime() - new Date(tracked.wentOfflineAt).getTime();
         if (offlineDuration >= minOfflineMs) {
-          console.log(`[Timed] ${tracked.nationName} (${tracked.nationId}) returned after ${Math.round(offlineDuration / 60000)}m offline — SENDING`);
+          // ✅ Was offline for required time, just came back → SEND NOW
+          console.log(
+            `[Timed] ${tracked.nationName} returned after ${Math.round(offlineDuration / 60000)}m offline — SENDING`
+          );
           await sendTimedMessage(tracked.nationId, tracked.nationName, tracked.leaderName ?? "", config, "sent");
         } else {
-          console.log(`[Timed] ${tracked.nationName} back online but only offline ${Math.round(offlineDuration / 60000)}m — waiting`);
-          await storage.updateTrackedNationActivity(tracked.nationId, lastActive, new Date(tracked.wentOfflineAt));
+          // Went offline but for less than minimum time — reset, keep watching
+          console.log(
+            `[Timed] ${tracked.nationName} returned but offline only ${Math.round(offlineDuration / 60000)}m (need ${Math.round(minOfflineMs / 60000)}m) — resetting`
+          );
+          await storage.updateTrackedNationActivity(tracked.nationId, currentLastActive, null);
         }
       } else {
-        await storage.updateTrackedNationActivity(tracked.nationId, lastActive, null);
+        // Was still online, just more activity — update snapshot
+        await storage.updateTrackedNationActivity(tracked.nationId, currentLastActive, null);
+      }
+    } else {
+      // ── No new activity: check if they've gone offline ──────────────────────
+      const isCurrentlyActive = (now.getTime() - currentLastActive.getTime()) < ACTIVE_THRESHOLD_MS;
+
+      if (!isCurrentlyActive && !tracked.wentOfflineAt) {
+        // Just went offline — record the time
+        await storage.updateTrackedNationActivity(tracked.nationId, currentLastActive, now);
+        console.log(`[Timed] ${tracked.nationName} (${tracked.nationId}) went offline — waiting for return`);
+      } else {
+        // Still offline (wentOfflineAt already set) or still active with same last_active
+        // Just keep the existing wentOfflineAt timestamp unchanged
+        await storage.updateTrackedNationActivity(
+          tracked.nationId,
+          currentLastActive,
+          tracked.wentOfflineAt ? new Date(tracked.wentOfflineAt) : null
+        );
       }
     }
   }
 }
 
+// ── Timed mode: claim + send + log ───────────────────────────────────────────
 async function sendTimedMessage(
   nationId: number,
   nationName: string,
@@ -353,12 +405,16 @@ async function sendTimedMessage(
     console.log(`[Timed] Successfully sent to ${nationName}`);
   } else {
     console.error(`[Timed] Failed to send to ${nationName}: ${result.error}`);
-    // Keep status 'watching' so next cycle retries
+    // Keep status 'watching' so next cycle retries via the claimNation retry queue
   }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Existing-player scan (unchanged)
+// Existing-player scan
+// Targets any nation that recently became unaligned (just left an alliance).
+// Ordered by last_active DESC so the freshest unaligned nations are first.
+// Active within last 24h ensures we catch them quickly after leaving.
+// 1-message-per-nation dedup is enforced via messagedNations UNIQUE constraint.
 // ════════════════════════════════════════════════════════════════════════════
 async function runExistingPlayerScan(
   config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>
@@ -386,20 +442,27 @@ async function runExistingPlayerScan(
     await new Promise(r => setTimeout(r, 1000));
   }
 
-  console.log("[Existing] Fetching unaligned nations...");
+  console.log("[Existing] Fetching recently-unaligned nations...");
   const nations = await fetchNationsFromGraphQL(EXISTING_PLAYER_QUERY, config.apiKey);
   if (!nations) return;
 
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  // Only unaligned nations active within the last 24 hours and not in vacation mode.
+  // No city minimum — we want anyone who just left an alliance.
+  const oneDayAgo = new Date(Date.now() - RECENTLY_UNALIGNED_MS);
+
   const eligible = nations.filter((n: any) => {
-    const cities = parseInt(n.num_cities) || 0;
     const vacationTurns = parseInt(n.vacation_mode_turns) || 0;
-    const lastActive = n.last_active ? new Date(n.last_active) : null;
-    const allianceId = parseInt(n.alliance_id) || 0;
-    return allianceId === 0 && cities > 15 && vacationTurns === 0 && lastActive !== null && lastActive >= sevenDaysAgo;
+    const lastActive    = n.last_active ? new Date(n.last_active) : null;
+    const allianceId    = parseInt(n.alliance_id) || 0;
+    return (
+      allianceId === 0 &&
+      vacationTurns === 0 &&
+      lastActive !== null &&
+      lastActive >= oneDayAgo
+    );
   });
 
-  console.log(`[Existing] ${eligible.length} eligible nation(s) after filtering.`);
+  console.log(`[Existing] ${eligible.length} eligible nation(s) after filtering (from ${nations.length} unaligned).`);
 
   let sent = 0;
   for (const nation of eligible) {
@@ -409,7 +472,7 @@ async function runExistingPlayerScan(
     if (!claimed) continue;
 
     sent++;
-    console.log(`[Existing] Sending to ${nation.nation_name} (${nationId}, cities: ${nation.num_cities})...`);
+    console.log(`[Existing] Sending to ${nation.nation_name} (${nationId})...`);
     const result = await sendMessage(nationId, nation.nation_name, nation.leader_name,
       { apiKey: config.apiKey, subject: config.existingPlayerSubject, messageTemplate: config.existingPlayerMessageTemplate });
     await storage.upsertLog({
