@@ -28,7 +28,6 @@ export async function registerRoutes(
   // Import config from a saved export file
   app.post(api.config.import.path, async (req, res) => {
     try {
-      // Strip export-only metadata fields before validating
       const { _exported, _version, ...rest } = req.body;
       const input = updateConfigSchema.parse(rest);
       const config = await storage.updateConfig(input);
@@ -44,13 +43,13 @@ export async function registerRoutes(
     res.json(logs);
   });
 
-  // Tracked nations — currently watching only (for live badge count + "All" view)
+  // Tracked nations — currently watching only
   app.get(api.trackedNations.list.path, async (req, res) => {
     const tracked = await storage.getTrackedWatchingNations();
     res.json(tracked);
   });
 
-  // All tracked nations — full history including sent/expired (for Tracking tab audit)
+  // All tracked nations — full history including sent/expired
   app.get(api.trackedNations.all.path, async (req, res) => {
     const tracked = await storage.getAllTrackedNations();
     res.json(tracked);
@@ -68,36 +67,22 @@ export async function registerRoutes(
     res.json({ message: "Bot cycle triggered" });
   });
 
-  // Health check routes
-  app.get("/health", (req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
-  });
-
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "online", bot: "running", timestamp: new Date().toISOString() });
-  });
+  // Health check — silent in logs
+  app.get("/health",     (req, res) => res.json({ status: "ok" }));
+  app.get("/api/health", (req, res) => res.json({ status: "online" }));
 
   startBotService();
 
-  // Self-ping every 4 minutes to keep container + DB alive
+  // ── Keep-alive: ping self + keep DB connection warm ──────────────────────
+  // Runs silently every 4 minutes. Prevents Replit container hibernation.
   const replitDomain = process.env.REPLIT_DOMAINS?.split(",")[0];
   const pingUrl = replitDomain
     ? `https://${replitDomain}/api/health`
     : `http://localhost:${process.env.PORT || 5000}/api/health`;
-  console.log(`Bot running. Keep-alive ping target: ${pingUrl}`);
 
   setInterval(async () => {
-    try {
-      await axios.get(pingUrl);
-      console.log("Self-ping OK");
-    } catch (err) {
-      console.warn("Self-ping failed:", (err as Error).message);
-    }
-    try {
-      await pool.query("SELECT 1");
-    } catch (err) {
-      console.warn("DB keepalive failed:", (err as Error).message);
-    }
+    try { await axios.get(pingUrl, { timeout: 10000 }); } catch { /* ignore */ }
+    try { await pool.query("SELECT 1"); }               catch { /* ignore */ }
   }, 4 * 60 * 1000);
 
   return httpServer;
