@@ -27,7 +27,7 @@ const NEW_NATIONS_QUERY = `
 // No city minimum — targets any player who just became unaligned.
 const EXISTING_PLAYER_QUERY = `
   query {
-    nations(first: 500, alliance_id: 0, orderBy: {column: LAST_ACTIVE, order: DESC}) {
+    nations(first: 500, alliance_id: 0) {
       data {
         id
         nation_name
