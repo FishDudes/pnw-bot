@@ -2,7 +2,7 @@ import axios from "axios";
 import { storage } from "./storage";
 import { autoLinkUrls } from "./urlLinker";
 
-const API_ENDPOINT   = "https://politicsandwar.com/api/send-message/";
+const API_ENDPOINT     = "https://politicsandwar.com/api/send-message/";
 const GRAPHQL_ENDPOINT = "https://api.politicsandwar.com/graphql";
 
 // ── GraphQL queries ──────────────────────────────────────────────────────────
@@ -22,8 +22,7 @@ const NEW_NATIONS_QUERY = `
   }
 `;
 
-// Existing-player: unaligned nations ordered by most-recently-active first.
-// Catches nations that just left an alliance (they'll be near the top).
+// Unaligned nations — used for discovering new existing-player candidates
 const EXISTING_PLAYER_QUERY = `
   query {
     nations(first: 500, alliance_id: 0) {
@@ -54,31 +53,45 @@ function buildActivityQuery(nationIds: number[]): string {
   `;
 }
 
+function buildExistingCheckQuery(nationIds: number[]): string {
+  return `
+    query {
+      nations(id: [${nationIds.join(",")}], first: 500) {
+        data {
+          id
+          nation_name
+          leader_name
+          last_active
+          alliance_id
+        }
+      }
+    }
+  `;
+}
+
 // ── Constants ────────────────────────────────────────────────────────────────
-const BAND_BELOW            = 20;
-const BAND_ABOVE            = 10;
-const ACTIVE_THRESHOLD_MS   = 10 * 60 * 1000;         // 10 min → considered offline
-const TRACKING_EXPIRY_MS    = 2  * 24 * 60 * 60 * 1000; // 2 days → fallback send
-const RECENTLY_UNALIGNED_MS = 24 * 60 * 60 * 1000;    // 24 h window for existing scan
-const MIN_SCAN_INTERVAL_S   = 30;
-const MAX_SCAN_INTERVAL_S   = 180;
+const BAND_BELOW              = 20;
+const BAND_ABOVE              = 10;
+const ACTIVE_THRESHOLD_MS     = 10 * 60 * 1000;           // 10 min → considered offline
+const TRACKING_EXPIRY_MS      = 2  * 24 * 60 * 60 * 1000; // 2 days → fallback send (new player)
+const TWO_WEEKS_MS            = 14 * 24 * 60 * 60 * 1000; // 2-week inactivity threshold
+const MIN_SCAN_INTERVAL_S     = 30;
+const MAX_SCAN_INTERVAL_S     = 180;
 
 // ── Cloudflare back-off state ────────────────────────────────────────────────
-// If Cloudflare blocks us, we pause API calls for an increasing duration
-// before retrying, rather than hammering and making it worse.
-let cfBlockedUntil: number = 0;       // epoch ms
-let cfBackoffMs: number    = 60_000;  // starts at 1 min, doubles each time up to 30 min
+let cfBlockedUntil: number = 0;
+let cfBackoffMs: number    = 60_000;
 
 function recordCloudflareBlock() {
   cfBlockedUntil = Date.now() + cfBackoffMs;
   console.warn(`[API] Cloudflare block detected. Pausing API calls for ${Math.round(cfBackoffMs / 60000)}m.`);
-  cfBackoffMs = Math.min(cfBackoffMs * 2, 30 * 60_000); // max 30 min back-off
+  cfBackoffMs = Math.min(cfBackoffMs * 2, 30 * 60_000);
 }
 
 function clearCloudflareBlock() {
   if (cfBlockedUntil > 0) {
     cfBlockedUntil = 0;
-    cfBackoffMs    = 60_000; // reset back-off on success
+    cfBackoffMs    = 60_000;
   }
 }
 
@@ -127,14 +140,8 @@ async function sendMessage(
 }
 
 // ── GraphQL fetcher ──────────────────────────────────────────────────────────
-// Uses a clean bot User-Agent instead of spoofing browser headers.
-// Browser-header spoofing makes Cloudflare MORE suspicious because the TLS
-// fingerprint from Node.js/axios never matches a real browser fingerprint.
 async function fetchNationsFromGraphQL(query: string, apiKey: string): Promise<any[] | null> {
-  // Respect active Cloudflare back-off window
-  if (Date.now() < cfBlockedUntil) {
-    return null; // silent skip — we're in back-off
-  }
+  if (Date.now() < cfBlockedUntil) return null;
 
   let response;
   try {
@@ -145,7 +152,6 @@ async function fetchNationsFromGraphQL(query: string, apiKey: string): Promise<a
         headers: {
           "Content-Type": "application/json",
           "Accept":        "application/json",
-          // Honest bot User-Agent — API endpoints with a valid key don't need spoofing
           "User-Agent": "AtlantisRecruitmentBot/1.0 (+https://politicsandwar.com/alliance/id=14921)",
         },
         timeout: 20000,
@@ -154,7 +160,6 @@ async function fetchNationsFromGraphQL(query: string, apiKey: string): Promise<a
   } catch (error: any) {
     const data = error?.response?.data;
     const body = typeof data === "string" ? data : JSON.stringify(data ?? "");
-
     if (body.includes("Just a moment") || body.includes("Cloudflare") || error?.response?.status === 429) {
       recordCloudflareBlock();
     } else {
@@ -168,8 +173,6 @@ async function fetchNationsFromGraphQL(query: string, apiKey: string): Promise<a
     recordCloudflareBlock();
     return null;
   }
-
-  // Successful response — reset back-off
   clearCloudflareBlock();
 
   const nations = data?.data?.nations?.data;
@@ -177,7 +180,6 @@ async function fetchNationsFromGraphQL(query: string, apiKey: string): Promise<a
     console.error("[API] Unexpected GraphQL response:", JSON.stringify(data).substring(0, 200));
     return null;
   }
-
   return nations;
 }
 
@@ -209,7 +211,6 @@ async function resolveBand(
 async function runInstantNewNationScan(
   config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>
 ) {
-  // Retry previously failed messages
   const failed = await storage.getFailedNations();
   for (const f of failed) {
     if (f.messageType !== "new_player") continue;
@@ -257,7 +258,6 @@ async function runInstantNewNationScan(
 
 // ════════════════════════════════════════════════════════════════════════════
 // MODE B — Timed new-nation scan
-// Detects logins by watching for changes in last_active (not just "is recent").
 // ════════════════════════════════════════════════════════════════════════════
 async function runTimedNewNationScan(
   config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>
@@ -269,7 +269,6 @@ async function runTimedNewNationScan(
 
   const { bandMin, bandMax } = await resolveBand(nations, config);
 
-  // Add newly-seen band nations to tracking
   for (const nation of nations) {
     const nationId = parseInt(nation.id);
     if (nationId < bandMin || nationId > bandMax) continue;
@@ -292,7 +291,6 @@ async function runTimedNewNationScan(
   const now = new Date();
 
   for (const tracked of watching) {
-    // 2-day expiry fallback
     if (now.getTime() - new Date(tracked.firstSeenAt).getTime() > TRACKING_EXPIRY_MS) {
       console.log(`[Timed] Expiry → ${tracked.nationName} (#${tracked.nationId}) — sending fallback after 2d`);
       await sendTimedMessage(tracked.nationId, tracked.nationName, tracked.leaderName ?? "", config, "expired");
@@ -305,14 +303,12 @@ async function runTimedNewNationScan(
     const currentLastActive = new Date(apiNation.last_active);
     const prevLastActive    = tracked.lastActiveAt ? new Date(tracked.lastActiveAt) : null;
 
-    // First time seeing this nation's activity
     if (prevLastActive === null) {
       const isActive = (now.getTime() - currentLastActive.getTime()) < ACTIVE_THRESHOLD_MS;
       await storage.updateTrackedNationActivity(tracked.nationId, currentLastActive, isActive ? null : now);
       continue;
     }
 
-    // Detect login: last_active moved forward = player just logged in
     const loginDetected = currentLastActive.getTime() > prevLastActive.getTime();
 
     if (loginDetected) {
@@ -325,14 +321,12 @@ async function runTimedNewNationScan(
           );
           await sendTimedMessage(tracked.nationId, tracked.nationName, tracked.leaderName ?? "", config, "sent");
         } else {
-          // Came back too soon — reset and keep watching
           await storage.updateTrackedNationActivity(tracked.nationId, currentLastActive, null);
         }
       } else {
         await storage.updateTrackedNationActivity(tracked.nationId, currentLastActive, null);
       }
     } else {
-      // No new activity — check if they just went offline
       const isCurrentlyActive = (now.getTime() - currentLastActive.getTime()) < ACTIVE_THRESHOLD_MS;
       if (!isCurrentlyActive && !tracked.wentOfflineAt) {
         await storage.updateTrackedNationActivity(tracked.nationId, currentLastActive, now);
@@ -363,17 +357,14 @@ async function sendTimedMessage(
     await storage.markTrackedNationDone(nationId, trackingStatus);
     return;
   }
-
   const result = await sendMessage(nationId, nationName, leaderName,
     { apiKey: config.apiKey, subject: config.subject, messageTemplate: config.messageTemplate });
-
   await storage.upsertLog({
     nationId, nationName, leaderName,
     status: result.success ? "success" : "failed",
     error:  result.success ? null : result.error,
     messageType: "new_player",
   });
-
   if (result.success) {
     await storage.markTrackedNationDone(nationId, trackingStatus, new Date());
   } else {
@@ -382,59 +373,135 @@ async function sendTimedMessage(
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Existing-player scan
-// Targets any unaligned nation active in the last 24h (just left an alliance).
+// Existing-player scan — timed mode
+//
+// Discovers unaligned nations each cycle. Tracks their last_active.
+// When last_active changes (login detected) AND they were inactive for ≥2 weeks,
+// sends the existing-player message immediately.
+// Skips nations in an alliance or already messaged.
 // ════════════════════════════════════════════════════════════════════════════
 async function runExistingPlayerScan(
   config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>
 ) {
   if (!config.existingPlayerSubject || !config.existingPlayerMessageTemplate) return;
 
-  // Retry failed existing-player messages
-  const failed = (await storage.getFailedNations()).filter(n => n.messageType === "existing_player");
-  for (const f of failed) {
-    const result = await sendMessage(f.nationId, f.nationName, f.leaderName ?? "",
-      { apiKey: config.apiKey, subject: config.existingPlayerSubject, messageTemplate: config.existingPlayerMessageTemplate });
-    await storage.upsertLog({
-      nationId: f.nationId, nationName: f.nationName, leaderName: f.leaderName ?? "",
-      status: result.success ? "success" : "failed",
-      error:  result.success ? null : result.error,
-      messageType: "existing_player",
-    });
-    if (result.success) console.log(`[Existing] Retry sent → ${f.nationName}`);
-    await new Promise(r => setTimeout(r, 1000));
+  // ── Step 1: Discover new unaligned candidates ──────────────────────────
+  const discovered = await fetchNationsFromGraphQL(EXISTING_PLAYER_QUERY, config.apiKey);
+  if (!discovered) return;
+
+  let newlyTracked = 0;
+  for (const nation of discovered) {
+    const nationId     = parseInt(nation.id);
+    const allianceId   = parseInt(nation.alliance_id) || 0;
+    const vacationMode = parseInt(nation.vacation_mode_turns) || 0;
+    if (allianceId !== 0 || vacationMode > 0) continue;
+    if (await storage.hasMessagedNation(nationId)) continue;
+
+    const lastActiveAt = nation.last_active ? new Date(nation.last_active) : null;
+    const added = await storage.addTrackedExistingNation(
+      nationId, nation.nation_name, nation.leader_name, lastActiveAt
+    );
+    if (added) newlyTracked++;
+  }
+  if (newlyTracked > 0) console.log(`[Existing] Now tracking ${newlyTracked} new candidate(s).`);
+
+  // ── Step 2: Check tracked nations for logins ───────────────────────────
+  const watching = await storage.getTrackedExistingWatchingNations();
+  if (watching.length === 0) return;
+
+  // Query in batches of 500
+  const BATCH = 500;
+  const apiMap = new Map<number, any>();
+  for (let i = 0; i < watching.length; i += BATCH) {
+    const ids   = watching.slice(i, i + BATCH).map(n => n.nationId);
+    const batch = await fetchNationsFromGraphQL(buildExistingCheckQuery(ids), config.apiKey);
+    if (!batch) return; // blocked — try again next cycle
+    for (const n of batch) apiMap.set(parseInt(n.id), n);
   }
 
-  const nations = await fetchNationsFromGraphQL(EXISTING_PLAYER_QUERY, config.apiKey);
-  if (!nations) return;
-
-  const oneDayAgo = new Date(Date.now() - RECENTLY_UNALIGNED_MS);
-  const eligible  = nations.filter((n: any) => {
-    const vacationTurns = parseInt(n.vacation_mode_turns) || 0;
-    const lastActive    = n.last_active ? new Date(n.last_active) : null;
-    const allianceId    = parseInt(n.alliance_id) || 0;
-    return allianceId === 0 && vacationTurns === 0 && lastActive !== null && lastActive >= oneDayAgo;
-  });
-
+  const now = Date.now();
   let sent = 0;
-  for (const nation of eligible) {
-    const nationId = parseInt(nation.id);
-    if (await storage.hasMessagedNation(nationId)) continue;
-    const claimed = await storage.claimNation(nationId, nation.nation_name, nation.leader_name, "existing_player");
-    if (!claimed) continue;
 
-    sent++;
-    const result = await sendMessage(nationId, nation.nation_name, nation.leader_name,
-      { apiKey: config.apiKey, subject: config.existingPlayerSubject, messageTemplate: config.existingPlayerMessageTemplate });
-    await storage.upsertLog({
-      nationId, nationName: nation.nation_name, leaderName: nation.leader_name,
-      status: result.success ? "success" : "failed",
-      error:  result.success ? null : result.error,
-      messageType: "existing_player",
-    });
-    if (result.success) console.log(`[Existing] Sent → ${nation.nation_name} (#${nationId})`);
-    else console.error(`[Existing] Failed → ${nation.nation_name}: ${result.error}`);
-    await new Promise(r => setTimeout(r, 1000));
+  for (const tracked of watching) {
+    const apiNation = apiMap.get(tracked.nationId);
+
+    // Nation not returned by API — likely deleted or data gap; skip this cycle
+    if (!apiNation) continue;
+
+    const allianceId = parseInt(apiNation.alliance_id) || 0;
+
+    // Joined an alliance → disqualify
+    if (allianceId !== 0) {
+      await storage.disqualifyTrackedExistingNation(tracked.nationId);
+      continue;
+    }
+
+    const currentLastActive = apiNation.last_active ? new Date(apiNation.last_active) : null;
+    if (!currentLastActive) continue;
+
+    const storedLastActive = tracked.lastSeenActiveAt ? new Date(tracked.lastSeenActiveAt) : null;
+
+    // First time we have an activity reading — just store it
+    if (!storedLastActive) {
+      await storage.updateTrackedExistingNationActivity(tracked.nationId, currentLastActive);
+      continue;
+    }
+
+    // Check for login: last_active moved forward = they just logged in
+    const loginDetected = currentLastActive.getTime() > storedLastActive.getTime();
+    if (!loginDetected) continue; // no change this cycle
+
+    // Login detected — check inactivity gap
+    const inactivityMs = currentLastActive.getTime() - storedLastActive.getTime();
+
+    if (inactivityMs >= TWO_WEEKS_MS) {
+      // ≥2 weeks inactive — send message immediately
+      if (await storage.hasMessagedNation(tracked.nationId)) {
+        await storage.markTrackedExistingNationSent(tracked.nationId, new Date());
+        continue;
+      }
+      const claimed = await storage.claimNation(
+        tracked.nationId, tracked.nationName, tracked.leaderName ?? "", "existing_player"
+      );
+      if (!claimed) {
+        await storage.markTrackedExistingNationSent(tracked.nationId, new Date());
+        continue;
+      }
+
+      const result = await sendMessage(
+        tracked.nationId, tracked.nationName, tracked.leaderName ?? "",
+        {
+          apiKey:           config.apiKey,
+          subject:          config.existingPlayerSubject,
+          messageTemplate:  config.existingPlayerMessageTemplate,
+        }
+      );
+      await storage.upsertLog({
+        nationId:    tracked.nationId,
+        nationName:  tracked.nationName,
+        leaderName:  tracked.leaderName ?? "",
+        status:      result.success ? "success" : "failed",
+        error:       result.success ? null : result.error,
+        messageType: "existing_player",
+      });
+
+      if (result.success) {
+        await storage.markTrackedExistingNationSent(tracked.nationId, new Date());
+        sent++;
+        const weeks = Math.floor(inactivityMs / (7 * 24 * 60 * 60 * 1000));
+        const days  = Math.floor((inactivityMs % (7 * 24 * 60 * 60 * 1000)) / (24 * 60 * 60 * 1000));
+        console.log(
+          `[Existing] Sent → ${tracked.nationName} (#${tracked.nationId}) ` +
+          `returned after ${weeks}w${days}d inactive`
+        );
+      } else {
+        console.error(`[Existing] Failed → ${tracked.nationName}: ${result.error}`);
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    } else {
+      // Logged in but gap < 2 weeks — update stored last_active and keep watching
+      await storage.updateTrackedExistingNationActivity(tracked.nationId, currentLastActive);
+    }
   }
 
   if (sent > 0) console.log(`[Existing] ${sent} message(s) sent this cycle.`);

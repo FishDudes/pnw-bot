@@ -1,9 +1,9 @@
 import { db } from "./db";
 import {
-  botConfig, messagedNations, trackedNewNations,
+  botConfig, messagedNations, trackedNewNations, trackedExistingNations,
   type BotConfig, type UpdateConfigRequest,
   type MessagedNation, type InsertMessagedNation,
-  type TrackedNewNation,
+  type TrackedNewNation, type TrackedExistingNation,
 } from "@shared/schema";
 import { eq, desc, and, or, lt, ne } from "drizzle-orm";
 
@@ -20,12 +20,19 @@ export interface IStorage {
   hasMessagedNation(nationId: number): Promise<boolean>;
   getFailedNations(): Promise<MessagedNation[]>;
 
-  // Timed-mode tracking
+  // New-player timed-mode tracking
   addTrackedNation(nationId: number, nationName: string, leaderName: string): Promise<boolean>;
   getTrackedWatchingNations(): Promise<TrackedNewNation[]>;
   getAllTrackedNations(): Promise<TrackedNewNation[]>;
   updateTrackedNationActivity(nationId: number, lastActiveAt: Date, wentOfflineAt: Date | null): Promise<void>;
   markTrackedNationDone(nationId: number, status: 'sent' | 'expired', messagedAt?: Date): Promise<void>;
+
+  // Existing-player timed-mode tracking
+  addTrackedExistingNation(nationId: number, nationName: string, leaderName: string, lastSeenActiveAt: Date | null): Promise<boolean>;
+  getTrackedExistingWatchingNations(): Promise<TrackedExistingNation[]>;
+  updateTrackedExistingNationActivity(nationId: number, lastSeenActiveAt: Date): Promise<void>;
+  disqualifyTrackedExistingNation(nationId: number): Promise<void>;
+  markTrackedExistingNationSent(nationId: number, messagedAt: Date): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -154,7 +161,7 @@ export class DatabaseStorage implements IStorage {
       );
   }
 
-  // ── Timed-mode tracking ──────────────────────────────────────────────────
+  // ── New-player timed-mode tracking ───────────────────────────────────────
 
   async addTrackedNation(nationId: number, nationName: string, leaderName: string): Promise<boolean> {
     const rows = await db.insert(trackedNewNations)
@@ -171,7 +178,6 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(trackedNewNations.firstSeenAt));
   }
 
-  // Returns ALL tracked nations (watching + sent + expired) for audit/history view
   async getAllTrackedNations(): Promise<TrackedNewNation[]> {
     return await db.select()
       .from(trackedNewNations)
@@ -193,6 +199,46 @@ export class DatabaseStorage implements IStorage {
     await db.update(trackedNewNations)
       .set({ status, messagedAt: messagedAt ?? null })
       .where(eq(trackedNewNations.nationId, nationId));
+  }
+
+  // ── Existing-player timed-mode tracking ──────────────────────────────────
+
+  async addTrackedExistingNation(
+    nationId: number,
+    nationName: string,
+    leaderName: string,
+    lastSeenActiveAt: Date | null
+  ): Promise<boolean> {
+    const rows = await db.insert(trackedExistingNations)
+      .values({ nationId, nationName, leaderName, lastSeenActiveAt, status: "watching" })
+      .onConflictDoNothing()
+      .returning();
+    return rows.length > 0;
+  }
+
+  async getTrackedExistingWatchingNations(): Promise<TrackedExistingNation[]> {
+    return await db.select()
+      .from(trackedExistingNations)
+      .where(eq(trackedExistingNations.status, "watching"))
+      .orderBy(desc(trackedExistingNations.firstSeenAt));
+  }
+
+  async updateTrackedExistingNationActivity(nationId: number, lastSeenActiveAt: Date): Promise<void> {
+    await db.update(trackedExistingNations)
+      .set({ lastSeenActiveAt })
+      .where(eq(trackedExistingNations.nationId, nationId));
+  }
+
+  async disqualifyTrackedExistingNation(nationId: number): Promise<void> {
+    await db.update(trackedExistingNations)
+      .set({ status: "disqualified" })
+      .where(eq(trackedExistingNations.nationId, nationId));
+  }
+
+  async markTrackedExistingNationSent(nationId: number, messagedAt: Date): Promise<void> {
+    await db.update(trackedExistingNations)
+      .set({ status: "sent", messagedAt })
+      .where(eq(trackedExistingNations.nationId, nationId));
   }
 }
 

@@ -48,10 +48,25 @@ export const trackedNewNations = pgTable("tracked_new_nations", {
   lastActiveAt: timestamp("last_active_at"),
   wentOfflineAt: timestamp("went_offline_at"),
   status: text("status").notNull().default("watching"),
-  // Set when the recruitment message is actually sent
   messagedAt: timestamp("messaged_at"),
 }, (table) => [
   unique("uq_tracked_new_nations_nation_id").on(table.nationId),
+]);
+
+// Existing-player timed tracking: unaligned nations watched for a 2-week inactivity return
+// status: 'watching' | 'sent' | 'disqualified'
+export const trackedExistingNations = pgTable("tracked_existing_nations", {
+  id: serial("id").primaryKey(),
+  nationId: integer("nation_id").notNull(),
+  nationName: text("nation_name").notNull(),
+  leaderName: text("leader_name"),
+  firstSeenAt: timestamp("first_seen_at").defaultNow().notNull(),
+  // Last last_active value we observed from the API
+  lastSeenActiveAt: timestamp("last_seen_active_at"),
+  status: text("status").notNull().default("watching"), // 'watching' | 'sent' | 'disqualified'
+  messagedAt: timestamp("messaged_at"),
+}, (table) => [
+  unique("uq_tracked_existing_nations_nation_id").on(table.nationId),
 ]);
 
 // === SCHEMAS ===
@@ -59,6 +74,7 @@ export const trackedNewNations = pgTable("tracked_new_nations", {
 export const insertBotConfigSchema = createInsertSchema(botConfig);
 export const insertMessagedNationSchema = createInsertSchema(messagedNations);
 export const insertTrackedNewNationSchema = createInsertSchema(trackedNewNations);
+export const insertTrackedExistingNationSchema = createInsertSchema(trackedExistingNations);
 
 // === TYPES ===
 
@@ -70,6 +86,9 @@ export type InsertMessagedNation = z.infer<typeof insertMessagedNationSchema>;
 
 export type TrackedNewNation = typeof trackedNewNations.$inferSelect;
 export type InsertTrackedNewNation = z.infer<typeof insertTrackedNewNationSchema>;
+
+export type TrackedExistingNation = typeof trackedExistingNations.$inferSelect;
+export type InsertTrackedExistingNation = z.infer<typeof insertTrackedExistingNationSchema>;
 
 // === API TYPES ===
 

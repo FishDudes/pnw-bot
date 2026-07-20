@@ -79,6 +79,21 @@ export async function runMigrations(): Promise<void> {
 
       ALTER TABLE tracked_new_nations
         ADD COLUMN IF NOT EXISTS messaged_at TIMESTAMP;
+
+      -- Existing-player timed tracking table
+      CREATE TABLE IF NOT EXISTS tracked_existing_nations (
+        id                  SERIAL PRIMARY KEY,
+        nation_id           INTEGER NOT NULL,
+        nation_name         TEXT NOT NULL,
+        leader_name         TEXT,
+        first_seen_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+        last_seen_active_at TIMESTAMP,
+        status              TEXT NOT NULL DEFAULT 'watching',
+        messaged_at         TIMESTAMP
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_tracked_existing_nations_nation_id
+        ON tracked_existing_nations (nation_id);
     `);
     console.log("Database migrations applied successfully.");
   } finally {
