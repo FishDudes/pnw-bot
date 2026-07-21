@@ -38,15 +38,22 @@ const UNALIGNED_NATIONS_QUERY = `
   }
 `;
 
-// Alliances — for the small-alliance leader scanner
+// Alliances — for the small-alliance leader scanner.
+// Uses nested nations + alliance_position (5=Leader, 4=Heir, 3=Officer) so the
+// leader is found by structural position, not by custom role title.
 const ALLIANCES_QUERY = `
   query {
     alliances(first: 500) {
       data {
         id
         name
-        leader_id
         num_nations
+        nations {
+          id
+          nation_name
+          leader_name
+          alliance_position
+        }
       }
     }
   }
@@ -83,19 +90,6 @@ function buildExistingCheckQuery(nationIds: number[]): string {
   `;
 }
 
-function buildNationsLookupQuery(nationIds: number[]): string {
-  return `
-    query {
-      nations(id: [${nationIds.join(",")}], first: 500) {
-        data {
-          id
-          nation_name
-          leader_name
-        }
-      }
-    }
-  `;
-}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const BAND_BELOW              = 20;
@@ -618,8 +612,11 @@ async function runExistingPlayerScan(
 // Alliance scanner
 //
 // Finds alliances with ≤8 members and sends the alliance-leader template to
-// each alliance's leader. Uses the same messagedNations dedup table so a
-// leader never receives more than one message across all scanners.
+// the highest-ranking officer found, by numeric position:
+//   5 = Leader  4 = Heir  3 = Officer
+// This is position-based, not title-based, so custom role names ("Emperor",
+// "Chancellor", etc.) don't affect detection. Uses the messagedNations dedup
+// table so a leader never receives more than one message across all scanners.
 // ════════════════════════════════════════════════════════════════════════════
 async function runAllianceScan(
   config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>
@@ -629,25 +626,6 @@ async function runAllianceScan(
   const alliances = await fetchAlliancesFromGraphQL(config.apiKey);
   if (!alliances) return;
 
-  // Filter: small alliances only, with a valid leader_id
-  const small = alliances.filter((a: any) => {
-    const size     = parseInt(a.num_nations) || 0;
-    const leaderId = parseInt(a.leader_id)   || 0;
-    return size > 0 && size <= MAX_ALLIANCE_SIZE && leaderId > 0;
-  });
-
-  if (small.length === 0) return;
-
-  // Fetch leader nation details in one batch
-  const leaderIds    = Array.from(new Set(small.map((a: any) => parseInt(a.leader_id))));
-  const leaderNations = await fetchNationsFromGraphQL(
-    buildNationsLookupQuery(leaderIds), config.apiKey
-  );
-  if (!leaderNations) return;
-
-  const leaderMap = new Map<number, any>();
-  for (const n of leaderNations) leaderMap.set(parseInt(n.id), n);
-
   const allianceConfig = {
     apiKey:          config.apiKey,
     subject:         config.allianceSubject,
@@ -655,9 +633,21 @@ async function runAllianceScan(
   };
 
   let sent = 0;
-  for (const alliance of small) {
-    const leaderId  = parseInt(alliance.leader_id);
-    const leader    = leaderMap.get(leaderId);
+
+  for (const alliance of alliances) {
+    // Use num_nations if available, otherwise count the nested nations array
+    const memberCount = parseInt(alliance.num_nations) || (alliance.nations?.length ?? 0);
+    if (memberCount === 0 || memberCount > MAX_ALLIANCE_SIZE) continue;
+
+    const members: any[] = alliance.nations ?? [];
+    if (members.length === 0) continue;
+
+    // Find highest-ranking member by numeric position (5=Leader > 4=Heir > 3=Officer)
+    const leader =
+      members.find((n: any) => parseInt(n.alliance_position) === 5) ??
+      members.find((n: any) => parseInt(n.alliance_position) === 4) ??
+      members.find((n: any) => parseInt(n.alliance_position) === 3);
+
     if (!leader) continue;
 
     const nationId   = parseInt(leader.id);
@@ -680,7 +670,7 @@ async function runAllianceScan(
     if (result.success) {
       console.log(
         `[Alliance] Sent → ${nationName} (#${nationId}), ` +
-        `leader of "${alliance.name}" (${alliance.num_nations} members)`
+        `leader of "${alliance.name}" (${memberCount} members)`
       );
     } else {
       console.error(`[Alliance] Failed → ${nationName}: ${result.error}`);
