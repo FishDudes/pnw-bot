@@ -2,12 +2,12 @@ import { useLogs, useTrackedNations, useAllTrackedNations } from "@/hooks/use-bo
 import { format, formatDistanceToNow } from "date-fns";
 import {
   History, CheckCircle2, XCircle, Search,
-  Users, UserCheck, Clock, Eye, WifiOff, Wifi, Send, Zap, Crown,
+  Users, Clock, Eye, WifiOff, Wifi, Send, Crown,
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import type { MessagedNation, TrackedNewNation } from "@shared/schema";
 
-type Filter = "all" | "new" | "existing" | "alliance" | "tracking";
+type Filter = "all" | "new" | "left" | "returned" | "alliance" | "tracking";
 
 type Entry =
   | { kind: "log";     data: MessagedNation;   time: number }
@@ -48,10 +48,11 @@ export function LogsTable() {
 
   const isLoading = logsLoading || watchLoading || allLoading;
 
-  const newCount      = (logs ?? []).filter(l => l.messageType === "new_player").length;
-  const existingCount = (logs ?? []).filter(l => l.messageType === "existing_instant" || l.messageType === "existing_timed").length;
-  const allianceCount = (logs ?? []).filter(l => l.messageType === "alliance_leader").length;
-  const trackingCount = (watching ?? []).length; // badge = currently watching
+  const newCount     = (logs ?? []).filter(l => l.messageType === "new_player").length;
+  const leftCount    = (logs ?? []).filter(l => l.messageType === "existing_instant").length;
+  const returnedCount= (logs ?? []).filter(l => l.messageType === "existing_timed").length;
+  const allianceCount= (logs ?? []).filter(l => l.messageType === "alliance_leader").length;
+  const trackingCount= (watching ?? []).length; // badge = currently watching
 
   const matches = (name: string, leader: string | null | undefined, id: number) => {
     if (!search) return true;
@@ -65,9 +66,10 @@ export function LogsTable() {
     const result: Entry[] = [];
 
     for (const log of logs ?? []) {
-      if (filter === "new"      && log.messageType !== "new_player") continue;
-      if (filter === "existing" && log.messageType !== "existing_instant" && log.messageType !== "existing_timed") continue;
-      if (filter === "alliance" && log.messageType !== "alliance_leader") continue;
+      if (filter === "new"       && log.messageType !== "new_player") continue;
+      if (filter === "left"      && log.messageType !== "existing_instant") continue;
+      if (filter === "returned"  && log.messageType !== "existing_timed") continue;
+      if (filter === "alliance"  && log.messageType !== "alliance_leader") continue;
       if (!matches(log.nationName, log.leaderName, log.nationId)) continue;
       result.push({ kind: "log", data: log, time: new Date(log.messagedAt).getTime() });
     }
@@ -126,20 +128,22 @@ export function LogsTable() {
         <div className="flex items-center gap-1.5 flex-wrap">
           {(
             [
-              { key: "all",      label: "All",           count: newCount + existingCount + allianceCount + trackingCount, color: "white"   },
-              { key: "new",      label: "New Player",    count: newCount,                                                 color: "blue"    },
-              { key: "existing", label: "Existing",      count: existingCount,                                            color: "purple"  },
-              { key: "alliance", label: "Alliance",      count: allianceCount,                                            color: "emerald" },
-              { key: "tracking", label: "Tracking",      count: trackingCount,                                            color: "amber"   },
+              { key: "all",       label: "All",          count: newCount + leftCount + returnedCount + allianceCount + trackingCount, color: "white"       },
+              { key: "new",       label: "New Player",   count: newCount,                                                     color: "blue"        },
+              { key: "left",      label: "Left Alliance", count: leftCount,                                                      color: "purple"      },
+              { key: "returned",  label: "Returned",     count: returnedCount,                                                  color: "purpleLight" },
+              { key: "alliance",  label: "Alliance",     count: allianceCount,                                                  color: "emerald"     },
+              { key: "tracking",  label: "Tracking",     count: trackingCount,                                                  color: "amber"       },
             ] as const
           ).map(({ key, label, count, color }) => {
             const active = filter === key;
             const cls = {
-              white:   active ? "bg-white/15 border-white/30 text-white"                   : "border-white/10 text-muted-foreground hover:border-white/20",
-              blue:    active ? "bg-blue-500/20 border-blue-500/50 text-blue-300"         : "border-white/10 text-muted-foreground hover:border-blue-500/30",
-              purple:  active ? "bg-purple-500/20 border-purple-500/50 text-purple-300"   : "border-white/10 text-muted-foreground hover:border-purple-500/30",
-              emerald: active ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-300": "border-white/10 text-muted-foreground hover:border-emerald-500/30",
-              amber:   active ? "bg-amber-500/20 border-amber-500/50 text-amber-300"      : "border-white/10 text-muted-foreground hover:border-amber-500/30",
+              white:       active ? "bg-white/15 border-white/30 text-white"                    : "border-white/10 text-muted-foreground hover:border-white/20",
+              blue:        active ? "bg-blue-500/20 border-blue-500/50 text-blue-300"          : "border-white/10 text-muted-foreground hover:border-blue-500/30",
+              purple:      active ? "bg-purple-500/20 border-purple-500/50 text-purple-300"    : "border-white/10 text-muted-foreground hover:border-purple-500/30",
+              purpleLight: active ? "bg-purple-300/20 border-purple-300/50 text-purple-200"    : "border-white/10 text-muted-foreground hover:border-purple-300/30",
+              emerald:     active ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-300": "border-white/10 text-muted-foreground hover:border-emerald-500/30",
+              amber:       active ? "bg-amber-500/20 border-amber-500/50 text-amber-300"        : "border-white/10 text-muted-foreground hover:border-amber-500/30",
             }[color];
             return (
               <button key={key} type="button" data-testid={`filter-${key}`}
@@ -317,20 +321,20 @@ export function LogsTable() {
                       </td>
                       <td className="px-3 sm:px-5 py-3 hidden lg:table-cell">
                         {log.messageType === "existing_instant" ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20" data-testid={`badge-type-${log.id}`}>
-                            <Zap className="w-3 h-3" />Left Alliance
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20" data-testid={`badge-type-${log.id}`}>
+                            Left Alliance
                           </span>
                         ) : log.messageType === "existing_timed" ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20" data-testid={`badge-type-${log.id}`}>
-                            <UserCheck className="w-3 h-3" />Returned
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-300/10 text-purple-300 border border-purple-300/20" data-testid={`badge-type-${log.id}`}>
+                            Returned
                           </span>
                         ) : log.messageType === "alliance_leader" ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" data-testid={`badge-type-${log.id}`}>
-                            <Crown className="w-3 h-3" />Alliance Leader
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" data-testid={`badge-type-${log.id}`}>
+                            Alliance Leader
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20" data-testid={`badge-type-${log.id}`}>
-                            <Users className="w-3 h-3" />New Player
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20" data-testid={`badge-type-${log.id}`}>
+                            New Player
                           </span>
                         )}
                       </td>
