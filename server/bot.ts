@@ -481,7 +481,7 @@ async function runExistingPlayerScan(
     if (lastActive < oneDayAgo) continue; // not recently active
 
     if (await storage.hasMessagedNation(nationId)) continue;
-    const claimed = await storage.claimNation(nationId, nation.nation_name, nation.leader_name, "existing_player");
+    const claimed = await storage.claimNation(nationId, nation.nation_name, nation.leader_name, "existing_instant");
     if (!claimed) continue;
 
     instantSent++;
@@ -490,7 +490,7 @@ async function runExistingPlayerScan(
       nationId, nationName: nation.nation_name, leaderName: nation.leader_name,
       status: result.success ? "success" : "failed",
       error:  result.success ? null : result.error,
-      messageType: "existing_player",
+      messageType: "existing_instant",
     });
     if (result.success) console.log(`[Existing/Instant] Sent → ${nation.nation_name} (#${nationId})`);
     else console.error(`[Existing/Instant] Failed → ${nation.nation_name}: ${result.error}`);
@@ -567,7 +567,7 @@ async function runExistingPlayerScan(
         continue;
       }
       const claimed = await storage.claimNation(
-        tracked.nationId, tracked.nationName, tracked.leaderName ?? "", "existing_player"
+        tracked.nationId, tracked.nationName, tracked.leaderName ?? "", "existing_timed"
       );
       if (!claimed) {
         await storage.markTrackedExistingNationSent(tracked.nationId, new Date());
@@ -583,7 +583,7 @@ async function runExistingPlayerScan(
         leaderName:  tracked.leaderName ?? "",
         status:      result.success ? "success" : "failed",
         error:       result.success ? null : result.error,
-        messageType: "existing_player",
+        messageType: "existing_timed",
       });
 
       if (result.success) {
