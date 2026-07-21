@@ -48,11 +48,19 @@ const ALLIANCES_QUERY = `
         id
         name
         num_nations
+        founded
+        treaties {
+          id
+          treaty_type
+          alliance1_id
+          alliance2_id
+        }
         nations {
           id
           nation_name
           leader_name
           alliance_position
+          last_active
         }
       }
     }
@@ -99,6 +107,8 @@ const TRACKING_EXPIRY_MS      = 2  * 24 * 60 * 60 * 1000;  // 2 days → fallbac
 const RECENTLY_UNALIGNED_MS   = 24 * 60 * 60 * 1000;       // 24h → instant existing-player scan
 const TWO_WEEKS_MS            = 14 * 24 * 60 * 60 * 1000;  // 2-week inactivity threshold
 const MAX_ALLIANCE_SIZE       = 8;
+const TWO_YEARS_MS            = 2 * 365.25 * 24 * 60 * 60 * 1000; // alliance age ceiling
+const OFFSHORE_INACTIVE_MS    = 30 * 24 * 60 * 60 * 1000;          // 30d inactive → bank-nation heuristic
 const MIN_SCAN_INTERVAL_S     = 30;
 const MAX_SCAN_INTERVAL_S     = 180;
 
