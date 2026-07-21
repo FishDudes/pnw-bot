@@ -336,14 +336,14 @@ export function ConfigForm() {
             </span>
           </div>
           <div className="space-y-1.5 text-xs text-muted-foreground">
-            <p className="font-medium text-purple-300/80">Both triggers below run every cycle, always — independent of the New Player scan mode above.</p>
+            <p className="font-medium text-purple-300/80">This scanner always does two things every cycle, regardless of the New Player mode setting above.</p>
             <p className="flex items-start gap-1.5">
               <Zap className="w-3 h-3 mt-0.5 text-purple-400 shrink-0" />
-              <span><span className="text-purple-300 font-medium">Instant:</span> Sent the moment a nation becomes unaligned and was active within the last 24 h — catches players the second they leave an alliance.</span>
+              <span>Messages players the <strong className="text-purple-300">instant they leave an alliance</strong> (if they were active within the last 24 h).</span>
             </p>
             <p className="flex items-start gap-1.5">
               <Clock className="w-3 h-3 mt-0.5 text-purple-400 shrink-0" />
-              <span><span className="text-purple-300 font-medium">Timed (2-week return):</span> Tracks all unaligned nations. Sent the moment a nation logs in after ≥2 weeks of inactivity.</span>
+              <span>Messages players the <strong className="text-purple-300">moment they log back in after 2+ weeks of inactivity</strong>.</span>
             </p>
             <p>One message per nation across all scanners — no nation is ever messaged twice.</p>
           </div>
