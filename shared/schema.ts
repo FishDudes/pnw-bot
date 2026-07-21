@@ -11,14 +11,13 @@ export const botConfig = pgTable("bot_config", {
   messageTemplate: text("message_template").notNull().default("Welcome to Politics and War!"),
   existingPlayerSubject: text("existing_player_subject").notNull().default(""),
   existingPlayerMessageTemplate: text("existing_player_message_template").notNull().default(""),
+  allianceSubject: text("alliance_subject").notNull().default(""),
+  allianceMessageTemplate: text("alliance_message_template").notNull().default(""),
   isActive: boolean("is_active").notNull().default(false),
   lastRunAt: timestamp("last_run_at"),
   lastNationId: integer("last_nation_id"),
   scanInterval: integer("scan_interval").notNull().default(120),
-  // 'instant' = message immediately on band scan
-  // 'timed'   = track and message on offline→online return
   newNationRecruitMode: text("new_nation_recruit_mode").notNull().default("instant"),
-  // Timed mode: minimum minutes a nation must be offline before we send on return
   timedModeOfflineMinutes: integer("timed_mode_offline_minutes").notNull().default(5),
 });
 
@@ -29,16 +28,15 @@ export const messagedNations = pgTable("messaged_nations", {
   nationName: text("nation_name").notNull(),
   leaderName: text("leader_name"),
   messagedAt: timestamp("messaged_at").defaultNow().notNull(),
-  status: text("status").notNull(), // 'success' | 'failed' | 'pending'
+  status: text("status").notNull(),
   error: text("error"),
-  messageType: text("message_type").notNull().default("new_player"), // 'new_player' | 'existing_player'
+  messageType: text("message_type").notNull().default("new_player"),
 }, (table) => [
   index("idx_messaged_nations_nation_status").on(table.nationId, table.status),
   unique("uq_messaged_nations_nation_id").on(table.nationId),
 ]);
 
 // Timed-mode tracking: new nations being watched before message is sent
-// status: 'watching' | 'sent' | 'expired'
 export const trackedNewNations = pgTable("tracked_new_nations", {
   id: serial("id").primaryKey(),
   nationId: integer("nation_id").notNull(),
@@ -53,17 +51,15 @@ export const trackedNewNations = pgTable("tracked_new_nations", {
   unique("uq_tracked_new_nations_nation_id").on(table.nationId),
 ]);
 
-// Existing-player timed tracking: unaligned nations watched for a 2-week inactivity return
-// status: 'watching' | 'sent' | 'disqualified'
+// Existing-player timed tracking: watches for 2-week inactivity returns
 export const trackedExistingNations = pgTable("tracked_existing_nations", {
   id: serial("id").primaryKey(),
   nationId: integer("nation_id").notNull(),
   nationName: text("nation_name").notNull(),
   leaderName: text("leader_name"),
   firstSeenAt: timestamp("first_seen_at").defaultNow().notNull(),
-  // Last last_active value we observed from the API
   lastSeenActiveAt: timestamp("last_seen_active_at"),
-  status: text("status").notNull().default("watching"), // 'watching' | 'sent' | 'disqualified'
+  status: text("status").notNull().default("watching"),
   messagedAt: timestamp("messaged_at"),
 }, (table) => [
   unique("uq_tracked_existing_nations_nation_id").on(table.nationId),

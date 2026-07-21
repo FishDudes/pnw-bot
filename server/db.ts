@@ -17,7 +17,6 @@ const ssl = connectionString.includes("sslmode=require")
 export const pool = new Pool({ connectionString, ssl });
 export const db = drizzle(pool, { schema });
 
-// Idempotent migrations — safe on both fresh and existing databases.
 export async function runMigrations(): Promise<void> {
   const client = await pool.connect();
   try {
@@ -29,6 +28,8 @@ export async function runMigrations(): Promise<void> {
         message_template                 TEXT NOT NULL DEFAULT 'Welcome to Politics and War!',
         existing_player_subject          TEXT NOT NULL DEFAULT '',
         existing_player_message_template TEXT NOT NULL DEFAULT '',
+        alliance_subject                 TEXT NOT NULL DEFAULT '',
+        alliance_message_template        TEXT NOT NULL DEFAULT '',
         is_active                        BOOLEAN NOT NULL DEFAULT FALSE,
         last_run_at                      TIMESTAMP,
         last_nation_id                   INTEGER,
@@ -40,6 +41,8 @@ export async function runMigrations(): Promise<void> {
       ALTER TABLE bot_config
         ADD COLUMN IF NOT EXISTS existing_player_subject          TEXT NOT NULL DEFAULT '',
         ADD COLUMN IF NOT EXISTS existing_player_message_template TEXT NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS alliance_subject                 TEXT NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS alliance_message_template        TEXT NOT NULL DEFAULT '',
         ADD COLUMN IF NOT EXISTS new_nation_recruit_mode          TEXT NOT NULL DEFAULT 'instant',
         ADD COLUMN IF NOT EXISTS timed_mode_offline_minutes       INTEGER NOT NULL DEFAULT 5;
 
@@ -80,7 +83,6 @@ export async function runMigrations(): Promise<void> {
       ALTER TABLE tracked_new_nations
         ADD COLUMN IF NOT EXISTS messaged_at TIMESTAMP;
 
-      -- Existing-player timed tracking table
       CREATE TABLE IF NOT EXISTS tracked_existing_nations (
         id                  SERIAL PRIMARY KEY,
         nation_id           INTEGER NOT NULL,

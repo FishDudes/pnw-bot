@@ -22,8 +22,8 @@ const NEW_NATIONS_QUERY = `
   }
 `;
 
-// Unaligned nations — used for discovering new existing-player candidates
-const EXISTING_PLAYER_QUERY = `
+// Unaligned nations — discovery feed for existing-player scanner
+const UNALIGNED_NATIONS_QUERY = `
   query {
     nations(first: 500, alliance_id: 0) {
       data {
@@ -33,6 +33,20 @@ const EXISTING_PLAYER_QUERY = `
         vacation_mode_turns
         last_active
         alliance_id
+      }
+    }
+  }
+`;
+
+// Alliances — for the small-alliance leader scanner
+const ALLIANCES_QUERY = `
+  query {
+    alliances(first: 500) {
+      data {
+        id
+        name
+        leader_id
+        num_nations
       }
     }
   }
@@ -69,12 +83,28 @@ function buildExistingCheckQuery(nationIds: number[]): string {
   `;
 }
 
+function buildNationsLookupQuery(nationIds: number[]): string {
+  return `
+    query {
+      nations(id: [${nationIds.join(",")}], first: 500) {
+        data {
+          id
+          nation_name
+          leader_name
+        }
+      }
+    }
+  `;
+}
+
 // ── Constants ────────────────────────────────────────────────────────────────
 const BAND_BELOW              = 20;
 const BAND_ABOVE              = 10;
-const ACTIVE_THRESHOLD_MS     = 10 * 60 * 1000;           // 10 min → considered offline
-const TRACKING_EXPIRY_MS      = 2  * 24 * 60 * 60 * 1000; // 2 days → fallback send (new player)
-const TWO_WEEKS_MS            = 14 * 24 * 60 * 60 * 1000; // 2-week inactivity threshold
+const ACTIVE_THRESHOLD_MS     = 10 * 60 * 1000;            // 10 min → considered offline
+const TRACKING_EXPIRY_MS      = 2  * 24 * 60 * 60 * 1000;  // 2 days → fallback send (new player)
+const RECENTLY_UNALIGNED_MS   = 24 * 60 * 60 * 1000;       // 24h → instant existing-player scan
+const TWO_WEEKS_MS            = 14 * 24 * 60 * 60 * 1000;  // 2-week inactivity threshold
+const MAX_ALLIANCE_SIZE       = 8;
 const MIN_SCAN_INTERVAL_S     = 30;
 const MAX_SCAN_INTERVAL_S     = 180;
 
@@ -139,7 +169,7 @@ async function sendMessage(
   }
 }
 
-// ── GraphQL fetcher ──────────────────────────────────────────────────────────
+// ── GraphQL fetcher (nations) ────────────────────────────────────────────────
 async function fetchNationsFromGraphQL(query: string, apiKey: string): Promise<any[] | null> {
   if (Date.now() < cfBlockedUntil) return null;
 
@@ -181,6 +211,50 @@ async function fetchNationsFromGraphQL(query: string, apiKey: string): Promise<a
     return null;
   }
   return nations;
+}
+
+// ── GraphQL fetcher (alliances) ──────────────────────────────────────────────
+async function fetchAlliancesFromGraphQL(apiKey: string): Promise<any[] | null> {
+  if (Date.now() < cfBlockedUntil) return null;
+
+  let response;
+  try {
+    response = await axios.post(
+      `${GRAPHQL_ENDPOINT}?api_key=${apiKey}`,
+      { query: ALLIANCES_QUERY },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Accept":        "application/json",
+          "User-Agent": "AtlantisRecruitmentBot/1.0 (+https://politicsandwar.com/alliance/id=14921)",
+        },
+        timeout: 20000,
+      }
+    );
+  } catch (error: any) {
+    const data = error?.response?.data;
+    const body = typeof data === "string" ? data : JSON.stringify(data ?? "");
+    if (body.includes("Just a moment") || body.includes("Cloudflare") || error?.response?.status === 429) {
+      recordCloudflareBlock();
+    } else {
+      console.error("[API] Alliance fetch error:", body.substring(0, 200) || error?.message);
+    }
+    return null;
+  }
+
+  const data = response.data;
+  if (typeof data === "string" && (data.includes("Just a moment") || data.includes("Cloudflare"))) {
+    recordCloudflareBlock();
+    return null;
+  }
+  clearCloudflareBlock();
+
+  const alliances = data?.data?.alliances?.data;
+  if (!alliances || !Array.isArray(alliances)) {
+    console.error("[API] Unexpected alliances response:", JSON.stringify(data).substring(0, 200));
+    return null;
+  }
+  return alliances;
 }
 
 // ── Band resolver ─────────────────────────────────────────────────────────────
@@ -373,24 +447,69 @@ async function sendTimedMessage(
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Existing-player scan — timed mode
+// Existing-player scan — DUAL MODE (runs simultaneously each cycle)
 //
-// Discovers unaligned nations each cycle. Tracks their last_active.
-// When last_active changes (login detected) AND they were inactive for ≥2 weeks,
-// sends the existing-player message immediately.
-// Skips nations in an alliance or already messaged.
+// Trigger 1 — INSTANT: nation is unaligned and active within the last 24h
+//             → catches players the moment they leave an alliance
+//
+// Trigger 2 — TIMED:   nation was inactive for ≥2 weeks and just logged in
+//             → catches returning veterans the moment they return
+//
+// Both triggers use the same existingPlayerMessageTemplate.
+// The messagedNations UNIQUE constraint ensures no nation is ever messaged twice.
 // ════════════════════════════════════════════════════════════════════════════
 async function runExistingPlayerScan(
   config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>
 ) {
   if (!config.existingPlayerSubject || !config.existingPlayerMessageTemplate) return;
 
-  // ── Step 1: Discover new unaligned candidates ──────────────────────────
-  const discovered = await fetchNationsFromGraphQL(EXISTING_PLAYER_QUERY, config.apiKey);
-  if (!discovered) return;
+  const epConfig = {
+    apiKey:          config.apiKey,
+    subject:         config.existingPlayerSubject,
+    messageTemplate: config.existingPlayerMessageTemplate,
+  };
 
+  // ── Fetch unaligned nations ──────────────────────────────────────────────
+  const nations = await fetchNationsFromGraphQL(UNALIGNED_NATIONS_QUERY, config.apiKey);
+  if (!nations) return;
+
+  const oneDayAgo = new Date(Date.now() - RECENTLY_UNALIGNED_MS);
+  let instantSent = 0;
+
+  // ── TRIGGER 1: Instant send for recently-active unaligned nations ────────
+  for (const nation of nations) {
+    const nationId     = parseInt(nation.id);
+    const allianceId   = parseInt(nation.alliance_id) || 0;
+    const vacationMode = parseInt(nation.vacation_mode_turns) || 0;
+    const lastActive   = nation.last_active ? new Date(nation.last_active) : null;
+
+    if (allianceId !== 0 || vacationMode > 0 || !lastActive) continue;
+    if (lastActive < oneDayAgo) continue; // not recently active
+
+    if (await storage.hasMessagedNation(nationId)) continue;
+    const claimed = await storage.claimNation(nationId, nation.nation_name, nation.leader_name, "existing_player");
+    if (!claimed) continue;
+
+    instantSent++;
+    const result = await sendMessage(nationId, nation.nation_name, nation.leader_name, epConfig);
+    await storage.upsertLog({
+      nationId, nationName: nation.nation_name, leaderName: nation.leader_name,
+      status: result.success ? "success" : "failed",
+      error:  result.success ? null : result.error,
+      messageType: "existing_player",
+    });
+    if (result.success) console.log(`[Existing/Instant] Sent → ${nation.nation_name} (#${nationId})`);
+    else console.error(`[Existing/Instant] Failed → ${nation.nation_name}: ${result.error}`);
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  if (instantSent > 0) console.log(`[Existing/Instant] ${instantSent} message(s) sent this cycle.`);
+
+  // ── TRIGGER 2: Timed — track all unaligned, fire on 2-week return ────────
+
+  // Add newly discovered unaligned nations to the tracking table
   let newlyTracked = 0;
-  for (const nation of discovered) {
+  for (const nation of nations) {
     const nationId     = parseInt(nation.id);
     const allianceId   = parseInt(nation.alliance_id) || 0;
     const vacationMode = parseInt(nation.vacation_mode_turns) || 0;
@@ -403,34 +522,31 @@ async function runExistingPlayerScan(
     );
     if (added) newlyTracked++;
   }
-  if (newlyTracked > 0) console.log(`[Existing] Now tracking ${newlyTracked} new candidate(s).`);
+  if (newlyTracked > 0) console.log(`[Existing/Timed] Now tracking ${newlyTracked} new candidate(s).`);
 
-  // ── Step 2: Check tracked nations for logins ───────────────────────────
+  // Check all currently-watching nations for logins
   const watching = await storage.getTrackedExistingWatchingNations();
   if (watching.length === 0) return;
 
-  // Query in batches of 500
   const BATCH = 500;
   const apiMap = new Map<number, any>();
   for (let i = 0; i < watching.length; i += BATCH) {
     const ids   = watching.slice(i, i + BATCH).map(n => n.nationId);
     const batch = await fetchNationsFromGraphQL(buildExistingCheckQuery(ids), config.apiKey);
-    if (!batch) return; // blocked — try again next cycle
+    if (!batch) return;
     for (const n of batch) apiMap.set(parseInt(n.id), n);
   }
 
   const now = Date.now();
-  let sent = 0;
+  let timedSent = 0;
 
   for (const tracked of watching) {
     const apiNation = apiMap.get(tracked.nationId);
-
-    // Nation not returned by API — likely deleted or data gap; skip this cycle
     if (!apiNation) continue;
 
     const allianceId = parseInt(apiNation.alliance_id) || 0;
 
-    // Joined an alliance → disqualify
+    // Joined an alliance → disqualify from timed tracking
     if (allianceId !== 0) {
       await storage.disqualifyTrackedExistingNation(tracked.nationId);
       continue;
@@ -441,21 +557,17 @@ async function runExistingPlayerScan(
 
     const storedLastActive = tracked.lastSeenActiveAt ? new Date(tracked.lastSeenActiveAt) : null;
 
-    // First time we have an activity reading — just store it
     if (!storedLastActive) {
       await storage.updateTrackedExistingNationActivity(tracked.nationId, currentLastActive);
       continue;
     }
 
-    // Check for login: last_active moved forward = they just logged in
     const loginDetected = currentLastActive.getTime() > storedLastActive.getTime();
-    if (!loginDetected) continue; // no change this cycle
+    if (!loginDetected) continue;
 
-    // Login detected — check inactivity gap
     const inactivityMs = currentLastActive.getTime() - storedLastActive.getTime();
 
     if (inactivityMs >= TWO_WEEKS_MS) {
-      // ≥2 weeks inactive — send message immediately
       if (await storage.hasMessagedNation(tracked.nationId)) {
         await storage.markTrackedExistingNationSent(tracked.nationId, new Date());
         continue;
@@ -469,12 +581,7 @@ async function runExistingPlayerScan(
       }
 
       const result = await sendMessage(
-        tracked.nationId, tracked.nationName, tracked.leaderName ?? "",
-        {
-          apiKey:           config.apiKey,
-          subject:          config.existingPlayerSubject,
-          messageTemplate:  config.existingPlayerMessageTemplate,
-        }
+        tracked.nationId, tracked.nationName, tracked.leaderName ?? "", epConfig
       );
       await storage.upsertLog({
         nationId:    tracked.nationId,
@@ -487,28 +594,105 @@ async function runExistingPlayerScan(
 
       if (result.success) {
         await storage.markTrackedExistingNationSent(tracked.nationId, new Date());
-        sent++;
+        timedSent++;
         const weeks = Math.floor(inactivityMs / (7 * 24 * 60 * 60 * 1000));
         const days  = Math.floor((inactivityMs % (7 * 24 * 60 * 60 * 1000)) / (24 * 60 * 60 * 1000));
         console.log(
-          `[Existing] Sent → ${tracked.nationName} (#${tracked.nationId}) ` +
+          `[Existing/Timed] Sent → ${tracked.nationName} (#${tracked.nationId}) ` +
           `returned after ${weeks}w${days}d inactive`
         );
       } else {
-        console.error(`[Existing] Failed → ${tracked.nationName}: ${result.error}`);
+        console.error(`[Existing/Timed] Failed → ${tracked.nationName}: ${result.error}`);
       }
       await new Promise(r => setTimeout(r, 1000));
     } else {
-      // Logged in but gap < 2 weeks — update stored last_active and keep watching
+      // Login but gap < 2 weeks — update stored value and keep watching
       await storage.updateTrackedExistingNationActivity(tracked.nationId, currentLastActive);
     }
   }
 
-  if (sent > 0) console.log(`[Existing] ${sent} message(s) sent this cycle.`);
+  if (timedSent > 0) console.log(`[Existing/Timed] ${timedSent} message(s) sent this cycle.`);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Main cycle
+// Alliance scanner
+//
+// Finds alliances with ≤8 members and sends the alliance-leader template to
+// each alliance's leader. Uses the same messagedNations dedup table so a
+// leader never receives more than one message across all scanners.
+// ════════════════════════════════════════════════════════════════════════════
+async function runAllianceScan(
+  config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>
+) {
+  if (!config.allianceSubject || !config.allianceMessageTemplate) return;
+
+  const alliances = await fetchAlliancesFromGraphQL(config.apiKey);
+  if (!alliances) return;
+
+  // Filter: small alliances only, with a valid leader_id
+  const small = alliances.filter((a: any) => {
+    const size     = parseInt(a.num_nations) || 0;
+    const leaderId = parseInt(a.leader_id)   || 0;
+    return size > 0 && size <= MAX_ALLIANCE_SIZE && leaderId > 0;
+  });
+
+  if (small.length === 0) return;
+
+  // Fetch leader nation details in one batch
+  const leaderIds    = Array.from(new Set(small.map((a: any) => parseInt(a.leader_id))));
+  const leaderNations = await fetchNationsFromGraphQL(
+    buildNationsLookupQuery(leaderIds), config.apiKey
+  );
+  if (!leaderNations) return;
+
+  const leaderMap = new Map<number, any>();
+  for (const n of leaderNations) leaderMap.set(parseInt(n.id), n);
+
+  const allianceConfig = {
+    apiKey:          config.apiKey,
+    subject:         config.allianceSubject,
+    messageTemplate: config.allianceMessageTemplate,
+  };
+
+  let sent = 0;
+  for (const alliance of small) {
+    const leaderId  = parseInt(alliance.leader_id);
+    const leader    = leaderMap.get(leaderId);
+    if (!leader) continue;
+
+    const nationId   = parseInt(leader.id);
+    const nationName = leader.nation_name ?? `Nation #${nationId}`;
+    const leaderName = leader.leader_name ?? "";
+
+    if (await storage.hasMessagedNation(nationId)) continue;
+    const claimed = await storage.claimNation(nationId, nationName, leaderName, "alliance_leader");
+    if (!claimed) continue;
+
+    sent++;
+    const result = await sendMessage(nationId, nationName, leaderName, allianceConfig);
+    await storage.upsertLog({
+      nationId, nationName, leaderName,
+      status:      result.success ? "success" : "failed",
+      error:       result.success ? null : result.error,
+      messageType: "alliance_leader",
+    });
+
+    if (result.success) {
+      console.log(
+        `[Alliance] Sent → ${nationName} (#${nationId}), ` +
+        `leader of "${alliance.name}" (${alliance.num_nations} members)`
+      );
+    } else {
+      console.error(`[Alliance] Failed → ${nationName}: ${result.error}`);
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  if (sent > 0) console.log(`[Alliance] ${sent} message(s) sent this cycle.`);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Main cycle — all scanners run every cycle
 // ════════════════════════════════════════════════════════════════════════════
 export async function runBotCycle() {
   if (cycleRunning) return;
@@ -528,6 +712,7 @@ export async function runBotCycle() {
     }
 
     await runExistingPlayerScan(config);
+    await runAllianceScan(config);
   } finally {
     cycleRunning = false;
   }

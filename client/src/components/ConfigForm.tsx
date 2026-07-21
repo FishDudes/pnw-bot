@@ -7,7 +7,7 @@ import { useEffect, useRef } from "react";
 import { format } from "date-fns";
 import {
   Settings, Save, Lock, MessageSquare, FileText, Timer,
-  Users, UserCheck, Zap, Clock, Download, Upload,
+  Users, UserCheck, Zap, Clock, Download, Upload, Shield,
 } from "lucide-react";
 
 const formSchema = updateConfigSchema.extend({
@@ -47,6 +47,8 @@ export function ConfigForm() {
       messageTemplate:                 "",
       existingPlayerSubject:           "",
       existingPlayerMessageTemplate:   "",
+      allianceSubject:                 "",
+      allianceMessageTemplate:         "",
       scanInterval:                    120,
       newNationRecruitMode:            "instant",
       timedModeOfflineMinutes:         15,
@@ -57,9 +59,7 @@ export function ConfigForm() {
   const recruitMode    = form.watch("newNationRecruitMode")    ?? "instant";
   const offlineMinutes = form.watch("timedModeOfflineMinutes") ?? 15;
 
-  // Scan interval slider: 30–180s
   const sliderPct  = ((scanInterval   - 30) / (180 - 30))  * 100;
-  // Offline minutes slider: 15–180 min
   const offlinePct = ((offlineMinutes - 15) / (180 - 15)) * 100;
 
   useEffect(() => {
@@ -70,9 +70,10 @@ export function ConfigForm() {
         messageTemplate:                 config.messageTemplate,
         existingPlayerSubject:           config.existingPlayerSubject   ?? "",
         existingPlayerMessageTemplate:   config.existingPlayerMessageTemplate ?? "",
+        allianceSubject:                 config.allianceSubject         ?? "",
+        allianceMessageTemplate:         config.allianceMessageTemplate ?? "",
         scanInterval:                    config.scanInterval            ?? 120,
         newNationRecruitMode:            config.newNationRecruitMode    ?? "instant",
-        // Clamp stored value to new min of 15 so form stays valid
         timedModeOfflineMinutes:         Math.max(15, config.timedModeOfflineMinutes ?? 15),
       });
     }
@@ -94,10 +95,11 @@ export function ConfigForm() {
       messageTemplate:                 config.messageTemplate,
       existingPlayerSubject:           config.existingPlayerSubject   ?? "",
       existingPlayerMessageTemplate:   config.existingPlayerMessageTemplate ?? "",
+      allianceSubject:                 config.allianceSubject         ?? "",
+      allianceMessageTemplate:         config.allianceMessageTemplate ?? "",
       scanInterval:                    config.scanInterval            ?? 120,
       newNationRecruitMode:            config.newNationRecruitMode    ?? "instant",
       timedModeOfflineMinutes:         config.timedModeOfflineMinutes ?? 15,
-      // System fields excluded: id, isActive, lastRunAt, lastNationId
     };
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
     const url  = URL.createObjectURL(blob);
@@ -122,7 +124,6 @@ export function ConfigForm() {
       }
     };
     reader.readAsText(file);
-    // Reset input so the same file can be re-imported
     e.target.value = "";
   }
 
@@ -146,7 +147,6 @@ export function ConfigForm() {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Import */}
           <input
             ref={importInputRef}
             type="file"
@@ -169,7 +169,6 @@ export function ConfigForm() {
             Import
           </button>
 
-          {/* Export */}
           <button
             type="button"
             disabled={!config}
@@ -258,7 +257,6 @@ export function ConfigForm() {
             <input type="hidden" {...form.register("newNationRecruitMode")} />
           </div>
 
-          {/* Offline wait time slider — 15 min to 3 hours */}
           {recruitMode === "timed" && (
             <div className="space-y-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
               <div className="flex items-center justify-between">
@@ -334,12 +332,20 @@ export function ConfigForm() {
             <UserCheck className="w-4 h-4 text-purple-400" />
             <span className="text-sm font-semibold text-purple-300">Existing Player Template</span>
             <span className="ml-auto text-xs text-muted-foreground bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-full">
-              Recently unaligned
+              Unaligned &amp; returning vets
             </span>
           </div>
-          <p className="text-xs text-muted-foreground -mt-1">
-            Sent to any unaligned nation active within the last 24 hours — catches players the moment they leave an alliance. Not in vacation mode. One message per nation.
-          </p>
+          <div className="space-y-1.5 text-xs text-muted-foreground">
+            <p className="flex items-start gap-1.5">
+              <Zap className="w-3 h-3 mt-0.5 text-purple-400 shrink-0" />
+              <span><span className="text-purple-300 font-medium">Instant:</span> Sent the moment a nation leaves an alliance (unaligned + active within 24 h).</span>
+            </p>
+            <p className="flex items-start gap-1.5">
+              <Clock className="w-3 h-3 mt-0.5 text-purple-400 shrink-0" />
+              <span><span className="text-purple-300 font-medium">Timed:</span> Sent the moment a nation logs in after ≥2 weeks of inactivity.</span>
+            </p>
+            <p>Both triggers use the same template below. One message per nation across all scanners.</p>
+          </div>
 
           <div className="space-y-2">
             <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
@@ -364,12 +370,49 @@ export function ConfigForm() {
               className="input-field min-h-[120px] resize-none font-mono text-sm leading-relaxed"
             />
           </div>
-          <p className="text-xs text-muted-foreground">
-            Leave both fields empty to disable this scanner. Supports HTML formatting.
-          </p>
+          <p className="text-xs text-muted-foreground">Leave both fields empty to disable this scanner. Supports HTML formatting.</p>
         </div>
 
-        {/* Scan Interval Slider — 30s to 3m */}
+        {/* ── Alliance Leader Template ─────────────────────────────────────── */}
+        <div className="space-y-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Shield className="w-4 h-4 text-emerald-400" />
+            <span className="text-sm font-semibold text-emerald-300">Alliance Leader Template</span>
+            <span className="ml-auto text-xs text-muted-foreground bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+              Small alliances ≤8 members
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground -mt-1">
+            Sent to the leader of any alliance with 8 or fewer member nations. One message per leader across all scanners — leaders already messaged by another scanner are skipped.
+          </p>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+              <MessageSquare className="w-3.5 h-3.5" /> Subject
+            </label>
+            <input
+              {...form.register("allianceSubject")}
+              data-testid="input-alliance-subject"
+              placeholder="Alliance recruitment subject"
+              className="input-field"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+              <FileText className="w-3.5 h-3.5" /> Message Template
+            </label>
+            <textarea
+              {...form.register("allianceMessageTemplate")}
+              data-testid="input-alliance-message-template"
+              placeholder="Enter your alliance leader recruitment message... HTML supported."
+              className="input-field min-h-[120px] resize-none font-mono text-sm leading-relaxed"
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">Leave both fields empty to disable this scanner. Supports HTML formatting.</p>
+        </div>
+
+        {/* Scan Interval Slider */}
         <div className="space-y-3 pt-1">
           <div className="flex items-center justify-between">
             <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
