@@ -47,8 +47,7 @@ const ALLIANCES_QUERY = `
       data {
         id
         name
-        num_nations
-        founded
+        date_created
         nations {
           id
           nation_name
@@ -640,12 +639,12 @@ async function runAllianceScan(
 
   for (const alliance of alliances) {
     // Skip invalid member counts
-    const memberCount = parseInt(alliance.num_nations) || (alliance.nations?.length ?? 0);
+    const memberCount = alliance.nations?.length ?? 0;
     if (memberCount === 0 || memberCount > MAX_ALLIANCE_SIZE) continue;
 
     // Skip alliances older than 2 years — established alliances are not recruiting targets
-    if (alliance.founded) {
-      const foundedMs = new Date(alliance.founded).getTime();
+    if (alliance.date_created) {
+      const foundedMs = new Date(alliance.date_created).getTime();
       if (!isNaN(foundedMs) && Date.now() - foundedMs > TWO_YEARS_MS) continue;
     }
 
