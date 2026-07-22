@@ -28,6 +28,7 @@ export interface IStorage {
   getAllTrackedNations(): Promise<TrackedNewNation[]>;
   updateTrackedNationActivity(nationId: number, lastActiveAt: Date, wentOfflineAt: Date | null): Promise<void>;
   markTrackedNationDone(nationId: number, status: 'sent' | 'expired', messagedAt?: Date): Promise<void>;
+  clearWatchingTrackedNations(): Promise<TrackedNewNation[]>;
 
   // Existing-player timed-mode tracking
   addTrackedExistingNation(nationId: number, nationName: string, leaderName: string, lastSeenActiveAt: Date | null): Promise<boolean>;
@@ -237,6 +238,15 @@ export class DatabaseStorage implements IStorage {
     await db.update(trackedNewNations)
       .set({ status, messagedAt: messagedAt ?? null })
       .where(eq(trackedNewNations.nationId, nationId));
+  }
+
+  // Atomically removes all watching tracked new nations and returns them so the
+  // caller can send their messages before shutdown. Uses DELETE...RETURNING so
+  // no nation is lost between the read and the delete.
+  async clearWatchingTrackedNations(): Promise<TrackedNewNation[]> {
+    return await db.delete(trackedNewNations)
+      .where(eq(trackedNewNations.status, "watching"))
+      .returning();
   }
 
   // ── Existing-player timed-mode tracking ──────────────────────────────────

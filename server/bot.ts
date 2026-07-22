@@ -715,6 +715,61 @@ async function runAllianceScan(
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// Flush on stop
+//
+// Called when the bot is turned off. Sends the new-player message to every
+// nation currently in "watching" state that hasn't been messaged yet, then
+// removes them from tracking so the next run starts with a clean slate.
+// Already-messaged nations remain in the messagedNations dedup table and will
+// never be contacted again.
+// ════════════════════════════════════════════════════════════════════════════
+export async function flushAndResetNewNationTracking(
+  config: NonNullable<Awaited<ReturnType<typeof storage.getConfig>>>
+): Promise<void> {
+  // Atomically pull and delete all watching nations in one DB round-trip.
+  const watching = await storage.clearWatchingTrackedNations();
+  if (watching.length === 0) {
+    console.log("[Flush] No tracked nations to flush.");
+    return;
+  }
+
+  console.log(`[Flush] Sending to ${watching.length} tracked nation(s) before shutdown...`);
+  let sent = 0;
+
+  for (const tracked of watching) {
+    if (await storage.hasMessagedNation(tracked.nationId)) continue;
+
+    const claimed = await storage.claimNation(
+      tracked.nationId, tracked.nationName, tracked.leaderName ?? "", "new_player"
+    );
+    if (!claimed) continue;
+
+    const result = await sendMessage(
+      tracked.nationId, tracked.nationName, tracked.leaderName ?? "",
+      { apiKey: config.apiKey, subject: config.subject, messageTemplate: config.messageTemplate }
+    );
+    await storage.upsertLog({
+      nationId:    tracked.nationId,
+      nationName:  tracked.nationName,
+      leaderName:  tracked.leaderName ?? "",
+      status:      result.success ? "success" : "failed",
+      error:       result.success ? null : result.error,
+      messageType: "new_player",
+    });
+
+    if (result.success) {
+      sent++;
+      console.log(`[Flush] Sent → ${tracked.nationName} (#${tracked.nationId})`);
+    } else {
+      console.error(`[Flush] Failed → ${tracked.nationName}: ${result.error}`);
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  console.log(`[Flush] Done. ${sent}/${watching.length} message(s) sent. Tracking reset.`);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // Main cycle — all scanners run every cycle
 // ════════════════════════════════════════════════════════════════════════════
 export async function runBotCycle() {

@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { updateConfigSchema } from "@shared/schema";
-import { startBotService, runBotCycle } from "./bot";
+import { startBotService, runBotCycle, flushAndResetNewNationTracking } from "./bot";
 import { pool } from "./db";
 import axios from "axios";
 
@@ -80,6 +80,17 @@ export async function registerRoutes(
     const { isActive } = req.body;
     const config = await storage.toggleBot(isActive);
     res.json(config);
+
+    // When the bot is turned off, flush all watching tracked nations in the
+    // background. This sends the new-player message to any nation that was
+    // being watched (timed mode) and hadn't been messaged yet, then clears
+    // the tracking table so the next run starts fresh. The messagedNations
+    // dedup table is never cleared, so no one gets messaged twice.
+    if (!isActive && config.apiKey) {
+      flushAndResetNewNationTracking(config).catch((err) =>
+        console.error("[Flush] Error during shutdown flush:", err)
+      );
+    }
   });
 
   app.post(api.bot.run.path, async (req, res) => {
