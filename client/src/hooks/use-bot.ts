@@ -151,6 +151,42 @@ export function useToggleBot() {
   });
 }
 
+// Import alliance leader logs from a saved export file (post-wipe restore)
+export function useImportAllianceLeaderLogs() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (data: Record<string, unknown>) => {
+      const res = await fetch(api.logs.allianceLeadersImport.path, {
+        method: api.logs.allianceLeadersImport.method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).message ?? "Import failed");
+      }
+      return api.logs.allianceLeadersImport.responses[200].parse(await res.json());
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: [api.logs.list.path] });
+      queryClient.invalidateQueries({ queryKey: [api.logs.allianceLeaders.path] });
+      toast({
+        title: "Alliance Leader Logs Imported",
+        description: `${result.imported} leader(s) restored, ${result.skipped} already on record.`,
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Import Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+}
+
 // Manual Run Trigger
 export function useRunBot() {
   const { toast } = useToast();

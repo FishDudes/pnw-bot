@@ -15,6 +15,8 @@ export interface IStorage {
   updateLastNationId(nationId: number): Promise<void>;
 
   getLogs(): Promise<MessagedNation[]>;
+  getAllianceLeaderLogs(): Promise<MessagedNation[]>;
+  importAllianceLeaderLogs(records: Array<{ nationId: number; nationName: string; leaderName?: string | null; messagedAt?: string | Date; status?: string }>): Promise<{ imported: number; skipped: number }>;
   upsertLog(log: InsertMessagedNation): Promise<MessagedNation>;
   claimNation(nationId: number, nationName: string, leaderName: string, messageType?: string): Promise<boolean>;
   hasMessagedNation(nationId: number): Promise<boolean>;
@@ -103,6 +105,39 @@ export class DatabaseStorage implements IStorage {
       .from(messagedNations)
       .orderBy(desc(messagedNations.messagedAt))
       .limit(200);
+  }
+
+  // Returns ALL alliance leader logs without any row cap — used for export and display in Alliance tab
+  async getAllianceLeaderLogs(): Promise<MessagedNation[]> {
+    return await db.select()
+      .from(messagedNations)
+      .where(eq(messagedNations.messageType, 'alliance_leader'))
+      .orderBy(desc(messagedNations.messagedAt));
+  }
+
+  // Bulk-restores alliance leader records after a Postgres wipe. Safe to call multiple times —
+  // the UNIQUE constraint on nation_id means existing records are silently skipped.
+  async importAllianceLeaderLogs(
+    records: Array<{ nationId: number; nationName: string; leaderName?: string | null; messagedAt?: string | Date; status?: string }>
+  ): Promise<{ imported: number; skipped: number }> {
+    if (records.length === 0) return { imported: 0, skipped: 0 };
+    let imported = 0;
+    for (const r of records) {
+      const rows = await db.insert(messagedNations)
+        .values({
+          nationId:    r.nationId,
+          nationName:  r.nationName,
+          leaderName:  r.leaderName ?? null,
+          messagedAt:  r.messagedAt ? new Date(r.messagedAt) : new Date(),
+          status:      r.status ?? 'success',
+          messageType: 'alliance_leader',
+          error:       null,
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (rows.length > 0) imported++;
+    }
+    return { imported, skipped: records.length - imported };
   }
 
   async claimNation(nationId: number, nationName: string, leaderName: string, messageType: string = "new_player"): Promise<boolean> {

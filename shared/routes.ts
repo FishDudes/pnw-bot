@@ -37,6 +37,20 @@ export const api = {
         200: z.array(z.custom<typeof messagedNations.$inferSelect>()),
       },
     },
+    allianceLeaders: {
+      method: "GET" as const,
+      path: "/api/logs/alliance-leaders" as const,
+      responses: {
+        200: z.array(z.custom<typeof messagedNations.$inferSelect>()),
+      },
+    },
+    allianceLeadersImport: {
+      method: "POST" as const,
+      path: "/api/logs/alliance-leaders/import" as const,
+      responses: {
+        200: z.object({ imported: z.number(), skipped: z.number() }),
+      },
+    },
   },
   trackedNations: {
     list: {

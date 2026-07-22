@@ -1,10 +1,10 @@
-import { useLogs, useTrackedNations, useAllTrackedNations } from "@/hooks/use-bot";
+import { useLogs, useTrackedNations, useAllTrackedNations, useImportAllianceLeaderLogs } from "@/hooks/use-bot";
 import { format, formatDistanceToNow } from "date-fns";
 import {
   History, CheckCircle2, XCircle, Search,
-  Users, Clock, Eye, WifiOff, Wifi, Send, Crown,
+  Clock, Eye, WifiOff, Wifi, Send, Download, Upload,
 } from "lucide-react";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import type { MessagedNation, TrackedNewNation } from "@shared/schema";
 
 type Filter = "all" | "new" | "left" | "returned" | "alliance" | "tracking";
@@ -43,8 +43,56 @@ export function LogsTable() {
   const { data: logs,       isLoading: logsLoading    } = useLogs();
   const { data: watching,   isLoading: watchLoading   } = useTrackedNations();
   const { data: allTracked, isLoading: allLoading     } = useAllTrackedNations();
+  const importAllianceLogs = useImportAllianceLeaderLogs();
+  const allianceImportRef  = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
+
+  async function handleAllianceExport() {
+    try {
+      const res = await fetch("/api/logs/alliance-leaders");
+      if (!res.ok) throw new Error("Export failed");
+      const records: MessagedNation[] = await res.json();
+      const payload = {
+        _exportType:    "alliance-leader-logs",
+        _version:       1,
+        _exportedAt:    new Date().toISOString(),
+        _totalRecords:  records.length,
+        records:        records.map(r => ({
+          nationId:   r.nationId,
+          nationName: r.nationName,
+          leaderName: r.leaderName,
+          messagedAt: r.messagedAt,
+          status:     r.status,
+        })),
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = `atlantis-alliance-leader-logs-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Alliance export failed", e);
+    }
+  }
+
+  function handleAllianceImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target?.result as string);
+        importAllianceLogs.mutate(data);
+      } catch {
+        console.error("Invalid alliance leader log file");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
 
   const isLoading = logsLoading || watchLoading || allLoading;
 
@@ -158,6 +206,40 @@ export function LogsTable() {
             );
           })}
         </div>
+
+        {/* ── Alliance Leader export / import toolbar ── */}
+        {filter === "alliance" && (
+          <div className="flex items-center gap-2 pt-1">
+            <span className="text-xs text-muted-foreground mr-1">Alliance Leader Logs:</span>
+            <button
+              type="button"
+              data-testid="button-alliance-export"
+              onClick={handleAllianceExport}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-500/30 text-emerald-400 text-xs font-medium hover:bg-emerald-500/10 transition-colors"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Export Alliance Leader Logs
+            </button>
+            <button
+              type="button"
+              data-testid="button-alliance-import"
+              onClick={() => allianceImportRef.current?.click()}
+              disabled={importAllianceLogs.isPending}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-500/30 text-emerald-400 text-xs font-medium hover:bg-emerald-500/10 transition-colors disabled:opacity-50"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              {importAllianceLogs.isPending ? "Importing…" : "Import Alliance Leader Logs"}
+            </button>
+            <input
+              ref={allianceImportRef}
+              type="file"
+              accept=".json"
+              className="hidden"
+              onChange={handleAllianceImportFile}
+              data-testid="input-alliance-log-import"
+            />
+          </div>
+        )}
       </div>
 
       {/* ── Table ── */}

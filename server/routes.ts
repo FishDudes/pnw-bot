@@ -43,6 +43,26 @@ export async function registerRoutes(
     res.json(logs);
   });
 
+  // Export ALL alliance leader logs (no row cap) — used to save messaged leaders before a DB wipe
+  app.get(api.logs.allianceLeaders.path, async (req, res) => {
+    const logs = await storage.getAllianceLeaderLogs();
+    res.json(logs);
+  });
+
+  // Import alliance leader logs from a saved export file
+  app.post(api.logs.allianceLeadersImport.path, async (req, res) => {
+    try {
+      const body = req.body;
+      if (!body || !Array.isArray(body.records)) {
+        return res.status(400).json({ message: "Invalid file: missing 'records' array" });
+      }
+      const result = await storage.importAllianceLeaderLogs(body.records);
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ message: err?.message ?? "Import failed" });
+    }
+  });
+
   // Tracked nations — currently watching only
   app.get(api.trackedNations.list.path, async (req, res) => {
     const tracked = await storage.getTrackedWatchingNations();

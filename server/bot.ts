@@ -49,18 +49,12 @@ const ALLIANCES_QUERY = `
         name
         num_nations
         founded
-        treaties {
-          id
-          treaty_type
-          alliance1_id
-          alliance2_id
-        }
         nations {
           id
           nation_name
           leader_name
           alliance_position
-          last_active
+          num_cities
         }
       }
     }
@@ -108,7 +102,7 @@ const RECENTLY_UNALIGNED_MS   = 24 * 60 * 60 * 1000;       // 24h → instant ex
 const TWO_WEEKS_MS            = 14 * 24 * 60 * 60 * 1000;  // 2-week inactivity threshold
 const MAX_ALLIANCE_SIZE       = 8;
 const TWO_YEARS_MS            = 2 * 365.25 * 24 * 60 * 60 * 1000; // alliance age ceiling
-const OFFSHORE_INACTIVE_MS    = 30 * 24 * 60 * 60 * 1000;          // 30d inactive → bank-nation heuristic
+const SMALL_ALLIANCE_CITY_CAP = 15;                                  // micro-alliances (1-2 members) skipped if leader >15 cities
 const MIN_SCAN_INTERVAL_S     = 30;
 const MAX_SCAN_INTERVAL_S     = 180;
 
@@ -645,9 +639,15 @@ async function runAllianceScan(
   let sent = 0;
 
   for (const alliance of alliances) {
-    // Use num_nations if available, otherwise count the nested nations array
+    // Skip invalid member counts
     const memberCount = parseInt(alliance.num_nations) || (alliance.nations?.length ?? 0);
     if (memberCount === 0 || memberCount > MAX_ALLIANCE_SIZE) continue;
+
+    // Skip alliances older than 2 years — established alliances are not recruiting targets
+    if (alliance.founded) {
+      const foundedMs = new Date(alliance.founded).getTime();
+      if (!isNaN(foundedMs) && Date.now() - foundedMs > TWO_YEARS_MS) continue;
+    }
 
     const members: any[] = alliance.nations ?? [];
     if (members.length === 0) continue;
@@ -659,6 +659,20 @@ async function runAllianceScan(
       members.find((n: any) => parseInt(n.alliance_position) === 3);
 
     if (!leader) continue;
+
+    // Micro-alliance filter (1–2 members): skip if leader has >15 cities.
+    // Offshore bank nations typically have many cities; real small alliances have fewer.
+    // Alliances with 3–8 members are always eligible regardless of city count.
+    if (memberCount <= 2) {
+      const leaderCities = parseInt(leader.num_cities ?? "0") || 0;
+      if (leaderCities > SMALL_ALLIANCE_CITY_CAP) {
+        console.log(
+          `[Alliance] Skip "${alliance.name}" — ${memberCount} member(s), ` +
+          `leader has ${leaderCities} cities (>${SMALL_ALLIANCE_CITY_CAP} cap for micro-alliances)`
+        );
+        continue;
+      }
+    }
 
     const nationId   = parseInt(leader.id);
     const nationName = leader.nation_name ?? `Nation #${nationId}`;
