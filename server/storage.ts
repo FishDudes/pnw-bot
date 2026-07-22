@@ -156,7 +156,10 @@ export class DatabaseStorage implements IStorage {
         set: {
           status: log.status,
           error: log.error ?? null,
-          messagedAt: new Date(),
+          // Preserve the original messagedAt so imported timestamps are never
+          // overwritten by a re-scan. Only update when the bot is actively
+          // recording a new send attempt (status = pending → success/failed).
+          messagedAt: log.messagedAt ?? new Date(),
           nationName: log.nationName,
           leaderName: log.leaderName,
           messageType: log.messageType ?? "new_player",

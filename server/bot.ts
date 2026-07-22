@@ -39,7 +39,7 @@ const UNALIGNED_NATIONS_QUERY = `
 `;
 
 // Alliances — for the small-alliance leader scanner.
-// Uses nested nations + alliance_position (5=Leader, 4=Heir, 3=Officer) so the
+// Uses nested nations + alliance_position (LEADER/HEIR/OFFICER string enum) so the
 // leader is found by structural position, not by custom role title.
 const ALLIANCES_QUERY = `
   query {
@@ -53,6 +53,7 @@ const ALLIANCES_QUERY = `
           nation_name
           leader_name
           alliance_position
+          vacation_mode_turns
           num_cities
         }
       }
@@ -651,14 +652,17 @@ async function runAllianceScan(
     const members: any[] = alliance.nations ?? [];
     if (members.length === 0) continue;
 
-    // Find highest-ranking member by position.
-    // The P&W GraphQL API returns alliance_position as a string enum:
-    // "LEADER" > "HEIR" > "OFFICER" > "MEMBER" > "APPLICANT"
+    // Exclude vacation-mode members — they cannot receive messages.
+    // We still try heir/officer if the leader is on vacation.
     const pos = (n: any): string => (n.alliance_position ?? "").toUpperCase();
+    const eligible = members.filter((n: any) => (parseInt(n.vacation_mode_turns) || 0) === 0);
+
+    // Find highest-ranking eligible member by position string enum:
+    // "LEADER" > "HEIR" > "OFFICER" > "MEMBER" > "APPLICANT"
     const leader =
-      members.find((n: any) => pos(n) === "LEADER") ??
-      members.find((n: any) => pos(n) === "HEIR") ??
-      members.find((n: any) => pos(n) === "OFFICER");
+      eligible.find((n: any) => pos(n) === "LEADER") ??
+      eligible.find((n: any) => pos(n) === "HEIR") ??
+      eligible.find((n: any) => pos(n) === "OFFICER");
 
     if (!leader) continue;
 
