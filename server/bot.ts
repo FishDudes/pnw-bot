@@ -651,11 +651,14 @@ async function runAllianceScan(
     const members: any[] = alliance.nations ?? [];
     if (members.length === 0) continue;
 
-    // Find highest-ranking member by numeric position (5=Leader > 4=Heir > 3=Officer)
+    // Find highest-ranking member by position.
+    // The P&W GraphQL API returns alliance_position as a string enum:
+    // "LEADER" > "HEIR" > "OFFICER" > "MEMBER" > "APPLICANT"
+    const pos = (n: any): string => (n.alliance_position ?? "").toUpperCase();
     const leader =
-      members.find((n: any) => parseInt(n.alliance_position) === 5) ??
-      members.find((n: any) => parseInt(n.alliance_position) === 4) ??
-      members.find((n: any) => parseInt(n.alliance_position) === 3);
+      members.find((n: any) => pos(n) === "LEADER") ??
+      members.find((n: any) => pos(n) === "HEIR") ??
+      members.find((n: any) => pos(n) === "OFFICER");
 
     if (!leader) continue;
 
