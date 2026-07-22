@@ -666,11 +666,14 @@ async function runAllianceScan(
 
     if (!leader) continue;
 
-    // Micro-alliance filter (1–2 members): skip if leader has >15 cities.
+    // Micro-alliance filter (1–2 members): skip if the actual Leader has >15 cities.
     // Offshore bank nations typically have many cities; real small alliances have fewer.
+    // We always check the Leader position's city count — even if that person is on
+    // vacation mode — so a vacation Leader can't bypass this filter.
     // Alliances with 3–8 members are always eligible regardless of city count.
     if (memberCount <= 2) {
-      const leaderCities = parseInt(leader.num_cities ?? "0") || 0;
+      const actualLeader = members.find((n: any) => pos(n) === "LEADER");
+      const leaderCities = parseInt((actualLeader ?? leader).num_cities ?? "0") || 0;
       if (leaderCities > SMALL_ALLIANCE_CITY_CAP) {
         console.log(
           `[Alliance] Skip "${alliance.name}" — ${memberCount} member(s), ` +
