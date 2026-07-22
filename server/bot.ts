@@ -47,7 +47,7 @@ const ALLIANCES_QUERY = `
       data {
         id
         name
-        date_created
+        date
         nations {
           id
           nation_name
@@ -643,8 +643,8 @@ async function runAllianceScan(
     if (memberCount === 0 || memberCount > MAX_ALLIANCE_SIZE) continue;
 
     // Skip alliances older than 2 years — established alliances are not recruiting targets
-    if (alliance.date_created) {
-      const foundedMs = new Date(alliance.date_created).getTime();
+    if (alliance.date) {
+      const foundedMs = new Date(alliance.date).getTime();
       if (!isNaN(foundedMs) && Date.now() - foundedMs > TWO_YEARS_MS) continue;
     }
 
