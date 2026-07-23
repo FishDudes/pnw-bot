@@ -151,6 +151,19 @@ export function useToggleBot() {
   });
 }
 
+// Fetch ALL alliance leader logs (no row cap) — used for the Alliance tab and export
+export function useAllianceLeaderLogs() {
+  return useQuery({
+    queryKey: [api.logs.allianceLeaders.path],
+    queryFn: async () => {
+      const res = await fetch(api.logs.allianceLeaders.path);
+      if (!res.ok) throw new Error("Failed to fetch alliance leader logs");
+      return res.json() as Promise<MessagedNation[]>;
+    },
+    refetchInterval: 10000,
+  });
+}
+
 // Import alliance leader logs from a saved export file (post-wipe restore)
 export function useImportAllianceLeaderLogs() {
   const queryClient = useQueryClient();

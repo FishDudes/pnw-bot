@@ -1,4 +1,4 @@
-import { useLogs, useTrackedNations, useAllTrackedNations, useImportAllianceLeaderLogs } from "@/hooks/use-bot";
+import { useLogs, useTrackedNations, useAllTrackedNations, useAllianceLeaderLogs, useImportAllianceLeaderLogs } from "@/hooks/use-bot";
 import { format, formatDistanceToNow } from "date-fns";
 import {
   History, CheckCircle2, XCircle, Search,
@@ -40,9 +40,10 @@ function TrackedStatusBadge({ status }: { status: string }) {
 }
 
 export function LogsTable() {
-  const { data: logs,       isLoading: logsLoading    } = useLogs();
-  const { data: watching,   isLoading: watchLoading   } = useTrackedNations();
-  const { data: allTracked, isLoading: allLoading     } = useAllTrackedNations();
+  const { data: logs,          isLoading: logsLoading    } = useLogs();
+  const { data: watching,      isLoading: watchLoading   } = useTrackedNations();
+  const { data: allTracked,    isLoading: allLoading     } = useAllTrackedNations();
+  const { data: allianceLogs,  isLoading: allianceLoading} = useAllianceLeaderLogs();
   const importAllianceLogs = useImportAllianceLeaderLogs();
   const allianceImportRef  = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState("");
@@ -94,12 +95,13 @@ export function LogsTable() {
     e.target.value = "";
   }
 
-  const isLoading = logsLoading || watchLoading || allLoading;
+  const isLoading = logsLoading || watchLoading || allLoading || allianceLoading;
 
   const newCount     = (logs ?? []).filter(l => l.messageType === "new_player").length;
   const leftCount    = (logs ?? []).filter(l => l.messageType === "existing_instant").length;
   const returnedCount= (logs ?? []).filter(l => l.messageType === "existing_timed").length;
-  const allianceCount= (logs ?? []).filter(l => l.messageType === "alliance_leader").length;
+  // Alliance count comes from the unlimited endpoint — not the 200-row general log
+  const allianceCount= (allianceLogs ?? []).length;
   const trackingCount= (watching ?? []).length; // badge = currently watching
 
   const matches = (name: string, leader: string | null | undefined, id: number) => {
@@ -113,11 +115,15 @@ export function LogsTable() {
     if (filter === "tracking") return [];
     const result: Entry[] = [];
 
-    for (const log of logs ?? []) {
+    // Alliance tab uses the unlimited dedicated endpoint so no records fall off
+    // the 200-row cap that the general getLogs() applies.
+    const source = filter === "alliance" ? (allianceLogs ?? []) : (logs ?? []);
+
+    for (const log of source) {
       if (filter === "new"       && log.messageType !== "new_player") continue;
       if (filter === "left"      && log.messageType !== "existing_instant") continue;
       if (filter === "returned"  && log.messageType !== "existing_timed") continue;
-      if (filter === "alliance"  && log.messageType !== "alliance_leader") continue;
+      // "alliance" filter: allianceLogs is already filtered server-side — no extra check needed
       if (!matches(log.nationName, log.leaderName, log.nationId)) continue;
       result.push({ kind: "log", data: log, time: new Date(log.messagedAt).getTime() });
     }
@@ -132,7 +138,7 @@ export function LogsTable() {
     result.sort((a, b) => b.time - a.time);
     return result;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [logs, watching, filter, search]);
+  }, [logs, allianceLogs, watching, filter, search]);
 
   // ── "Tracking" view: full history (all statuses), sorted by firstSeenAt DESC ─
   const trackingEntries = useMemo((): TrackedNewNation[] => {
